@@ -1,0 +1,16 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: O2C Plugin
+Bundle-SymbolicName: org.mycompany.o2c;singleton:=true
+Bundle-Version: 1.0.0.qualifier
+Bundle-RequiredExecutionEnvironment: JavaSE-17
+Bundle-ActivationPolicy: lazy
+Require-Bundle: org.adempiere.base;bundle-version="12.0.0",
+ org.adempiere.ui.zk;bundle-version="12.0.0",
+ org.adempiere.ui;bundle-version="12.0.0",
+ zul,
+ zk,
+ zcommon,
+ zweb
+Import-Package: org.osgi.service.event
+Service-Component: OSGI-INF/org.mycompany.o2c.O2CFormFactory.xml
