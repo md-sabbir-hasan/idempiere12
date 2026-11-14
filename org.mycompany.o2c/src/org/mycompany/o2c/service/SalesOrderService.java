@@ -4,17 +4,21 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 
+import org.mycompany.o2c.dao.OrderPersistenceDAO;
 import org.mycompany.o2c.dao.SalesOrderDAO;
+import org.mycompany.o2c.model.OrderHeader;
 import org.mycompany.o2c.model.OrderTotals;
 import org.mycompany.o2c.model.Option;
 import org.mycompany.o2c.model.Product;
 import org.mycompany.o2c.model.SalesOrderLine;
+import org.mycompany.o2c.model.SavedOrder;
 import org.mycompany.o2c.util.ValidationException;
 import org.mycompany.o2c.util.ValidationUtils;
 
 /** Order level business logic: line validation, amounts and totals. */
 public class SalesOrderService {
     private final SalesOrderDAO dao = new SalesOrderDAO();
+    private final OrderPersistenceDAO persistence = new OrderPersistenceDAO();
     private final ProductService productService;
     private final TaxService taxService;
     private final DiscountService discountService;
@@ -34,6 +38,44 @@ public class SalesOrderService {
         return dao.findOrderTypes();
     }
 
+    public List<Option> getPriceLists() {
+        return dao.findSalesPriceLists();
+    }
+
+    public List<Option> getSalesReps() {
+        return dao.findSalesReps();
+    }
+
+    public List<Option> getPaymentTerms() {
+        return dao.findPaymentTerms();
+    }
+
+    public int getCustomerPaymentTerm(int bpartnerId) {
+        return dao.findCustomerPaymentTerm(bpartnerId);
+    }
+
+    /**
+     * Validates the order and stores it as a Draft (MOrder / MOrderLine, one transaction).
+     * The order is not completed, nothing is reserved, shipped, invoiced or paid.
+     *
+     * @throws ValidationException with a user friendly message when something is missing
+     */
+    public SavedOrder saveDraft(OrderHeader h, List<SalesOrderLine> lines) {
+        ValidationUtils.requireId(h.getOrgId(), "Select an Organization.");
+        ValidationUtils.requireId(h.getBpartnerId(), "Select a customer.");
+        ValidationUtils.requireId(h.getWarehouseId(), "Select a Depot / Warehouse.");
+        ValidationUtils.requireId(h.getDocTypeId(), "Select the Type of Order.");
+        ValidationUtils.requireId(h.getPriceListId(), "Select a Price List.");
+        ValidationUtils.requireNotNull(h.getDateOrdered(), "Enter the Order Date.");
+        if (h.getDatePromised() != null && h.getDatePromised().before(h.getDateOrdered()))
+            throw new ValidationException("Expected Delivery cannot be before the Order Date.");
+        if (h.isSiteDelivery() && h.getSiteAddress().trim().isEmpty())
+            throw new ValidationException("Enter the site delivery address.");
+        if (lines == null || lines.isEmpty())
+            throw new ValidationException("Add at least one product line.");
+        return persistence.saveDraft(h, lines);
+    }
+
     /**
      * Validates the selection and builds a calculated order line.
      *
@@ -42,6 +84,13 @@ public class SalesOrderService {
     public SalesOrderLine buildLine(int bpartnerId, int warehouseId, int segmentId, String segmentName,
             int categoryId, String categoryName, int productId, Product product, BigDecimal qty,
             List<SalesOrderLine> existing) {
+        return buildLine(bpartnerId, warehouseId, segmentId, segmentName, categoryId, categoryName,
+                productId, product, qty, BigDecimal.ZERO, existing);
+    }
+
+    public SalesOrderLine buildLine(int bpartnerId, int warehouseId, int segmentId, String segmentName,
+            int categoryId, String categoryName, int productId, Product product, BigDecimal qty,
+            BigDecimal specialDiscountPct, List<SalesOrderLine> existing) {
 
         ValidationUtils.requireId(bpartnerId, "Select a customer first.");
         ValidationUtils.requireId(warehouseId, "Select a Depot / Warehouse.");
@@ -72,6 +121,7 @@ public class SalesOrderService {
         l.setQty(qty);
         l.setPrice(product.getPrice());
         l.setTaxRate(product.getTaxRate());
+        l.setSpecialDiscountPct(discountService.validateSpecialDiscountPct(specialDiscountPct));
         calculate(l);
         return l;
     }

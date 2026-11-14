@@ -13,8 +13,10 @@ import org.adempiere.webui.util.ZKUpdateUtil;
 import org.mycompany.o2c.model.Category;
 import org.mycompany.o2c.model.Customer;
 import org.mycompany.o2c.model.Option;
+import org.mycompany.o2c.model.OrderHeader;
 import org.mycompany.o2c.model.OrderTotals;
 import org.mycompany.o2c.model.Product;
+import org.mycompany.o2c.model.SavedOrder;
 import org.mycompany.o2c.model.SalesOrderLine;
 import org.mycompany.o2c.model.Segment;
 import org.mycompany.o2c.model.StockInfo;
@@ -83,6 +85,11 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     private Listbox customerList = new Listbox();
     private Datebox orderDate = new Datebox();
     private Datebox deliveryDate = new Datebox();
+    private Listbox priceListList = new Listbox();
+    private Listbox salesRepList = new Listbox();
+    private Listbox paymentTermList = new Listbox();
+    private Textbox notesBox = new Textbox();
+    private Label docNoLbl = new Label("Assigned on save");
 
     // ---- customer card
     private Label custNameLbl = new Label("");
@@ -116,6 +123,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     private Label stShortLbl = new Label("");
     private Decimalbox qtyBox = new Decimalbox();
     private Label qtyUomLbl = new Label("");
+    private Decimalbox spDiscBox = new Decimalbox();
     private Button addBtn = new Button("+ Add to Order");
     private Button clearBtn = new Button("Clear");
 
@@ -138,6 +146,11 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     private Button completeBtn = new Button("Complete Order");
     private Button printBtn = new Button("Print Order");
     private Button cancelBtn = new Button("Cancel");
+    private Label statusBadge = new Label("Draft (not saved)");
+
+    /** Set once the Draft is stored; blocks a second save of the same screen. */
+    private SavedOrder savedOrder = null;
+    private boolean saving = false;
 
     @Override
     protected void initForm() {
@@ -184,6 +197,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
 
         loadOrgs();
         loadTypes();
+        loadHeaderLookups();
         loadTerritories();
         refreshLines();
     }
@@ -192,7 +206,8 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
 
     private void styleInputs() {
         for (Listbox lb : new Listbox[] { orgList, whList, typeList, salesTypeList,
-                territoryList, customerList, segmentList, categoryList, productList }) {
+                territoryList, customerList, segmentList, categoryList, productList,
+                priceListList, salesRepList, paymentTermList }) {
             lb.setMold("select");
             lb.setStyle(INPUT);
             lb.addEventListener(Events.ON_SELECT, this);
@@ -203,6 +218,11 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         deliveryDate.setStyle("width:100%;");
         orderDate.setValue(new java.util.Date());
 
+        notesBox.setRows(2);
+        notesBox.setStyle(INPUT);
+        notesBox.setPlaceholder("Order notes");
+        docNoLbl.setStyle("font-weight:700; color:#0f172a;");
+
         siteDelivery.addEventListener(Events.ON_CHECK, this);
         siteAddress.setRows(3);
         siteAddress.setStyle(INPUT);
@@ -211,6 +231,10 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         qtyBox.setFormat("#,##0.##");
         qtyBox.setStyle("width:140px; padding:6px 8px; border:1px solid #cbd5e1; border-radius:8px;");
         qtyBox.addEventListener(Events.ON_CHANGE, this);
+
+        spDiscBox.setFormat("#,##0.##");
+        spDiscBox.setStyle("width:110px; padding:6px 8px; border:1px solid #cbd5e1; border-radius:8px;");
+        spDiscBox.setPlaceholder("0");
 
         btn(saveBtn, "#2563eb", "#ffffff", null);
         btn(completeBtn, "#16a34a", "#ffffff", null);
@@ -243,7 +267,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
 
         Div right = new Div();
         right.setStyle("display:flex; align-items:center; flex-wrap:wrap;");
-        Label badge = new Label("Draft");
+        Label badge = statusBadge;
         badge.setStyle("background:#dbeafe; color:#1d4ed8; font-weight:600; "
                      + "padding:5px 18px; border-radius:999px; margin-right:8px;");
         right.appendChild(badge);
@@ -265,6 +289,14 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         addRow(body, "Order Date *", orderDate, "Expected Delivery", deliveryDate);
         addRow(body, "Type of Order", typeList, "Sales Type", salesTypeList);
         addRow(body, "Territory", territoryList, "Customer *", customerList);
+        addRow(body, "Price List *", priceListList, "Sales Rep", salesRepList);
+        addRow(body, "Payment Term", paymentTermList, "Document No", docNoLbl);
+        body.appendChild(fieldLabel("Notes"));
+        notesBox.setHflex("1");
+        Div notesCell = new Div();
+        notesCell.setStyle("grid-column:span 3;");
+        notesCell.appendChild(notesBox);
+        body.appendChild(notesCell);
         return (Div) body.getParent();
     }
 
@@ -354,6 +386,10 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         row2.appendChild(ql);
         row2.appendChild(qtyBox);
         row2.appendChild(qtyUomLbl);
+        Label sl = new Label("Special Discount (%)");
+        sl.setStyle("font-weight:600; color:#334155; margin-left:24px;");
+        row2.appendChild(sl);
+        row2.appendChild(spDiscBox);
         body.appendChild(row2);
 
         Div row3 = new Div();
@@ -393,7 +429,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         String[][] cols = { { "#", "40px" }, { "Segment", "110px" }, { "Category", "110px" },
                 { "Product", "170px" }, { "Description", null }, { "UOM", "60px" },
                 { "Qty", "80px" }, { "Price", "100px" }, { "Gross", "110px" },
-                { "VAT", "100px" }, { "Total", "120px" }, { "Action", "130px" } };
+                { "Special Disc.", "120px" }, { "VAT", "100px" }, { "Total", "120px" }, { "Action", "130px" } };
         for (String[] c : cols) {
             Listheader h = new Listheader(c[0]);
             if (c[1] != null)
@@ -473,6 +509,14 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             typeList.setSelectedIndex(1);
     }
 
+    private void loadHeaderLookups() {
+        fill(priceListList, salesOrderService.getPriceLists(), Option::getId, Option::getName);
+        if (priceListList.getItemCount() == 2)
+            priceListList.setSelectedIndex(1);
+        fill(salesRepList, salesOrderService.getSalesReps(), Option::getId, Option::getName);
+        fill(paymentTermList, salesOrderService.getPaymentTerms(), Option::getId, Option::getName);
+    }
+
     /** Territory: Sales Type onujayi. */
     private void loadTerritories() {
         fill(territoryList, customerService.getTerritories(selectedValue(salesTypeList)),
@@ -503,6 +547,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         binLbl.setValue(c.getTaxId());
         creditLimitLbl.setValue(TAKA + fmt(c.getCreditLimit()));
         paymentTermLbl.setValue(c.getPaymentTerm());
+        selectById(paymentTermList, salesOrderService.getCustomerPaymentTerm(bpId));
         creditDaysLbl.setValue(c.getCreditDays() + " days");
         vatRateLbl.setValue(fmt(c.getVatRate()) + " %");
 
@@ -526,6 +571,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         clearList(productList);
         clearProductInfo();
         qtyBox.setValue((BigDecimal) null);
+        spDiscBox.setValue((BigDecimal) null);
     }
 
     // ---- Segment -> Category -> Product
@@ -631,12 +677,15 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     // ============================================================ order lines
 
     private void addLine() {
+        if (lockedAfterSave())
+            return;
         try {
             SalesOrderLine line = salesOrderService.buildLine(
                     selectedId(customerList), selectedId(whList),
                     selectedId(segmentList), selectedLabel(segmentList),
                     selectedId(categoryList), selectedLabel(categoryList),
-                    selectedId(productList), curProduct, qtyBox.getValue(), lines);
+                    selectedId(productList), curProduct, qtyBox.getValue(),
+                    spDiscBox.getValue(), lines);
             lines.add(line);
         } catch (ValidationException ex) {
             warn(ex.getMessage());
@@ -647,7 +696,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     }
 
     private void editLine(int idx) {
-        if (idx < 0 || idx >= lines.size())
+        if (idx < 0 || idx >= lines.size() || lockedAfterSave())
             return;
         SalesOrderLine l = lines.remove(idx);
         refreshLines();
@@ -659,11 +708,12 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         selectById(productList, l.getProductId());
         loadProductInfo(l.getProductId());
         qtyBox.setValue(l.getQty());
+        spDiscBox.setValue(l.getSpecialDiscountPct().signum() > 0 ? l.getSpecialDiscountPct() : null);
         updateRequested();
     }
 
     private void removeLine(int idx) {
-        if (idx < 0 || idx >= lines.size())
+        if (idx < 0 || idx >= lines.size() || lockedAfterSave())
             return;
         lines.remove(idx);
         refreshLines();
@@ -674,6 +724,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             segmentList.setSelectedIndex(0);
         loadCategories();
         qtyBox.setValue((BigDecimal) null);
+        spDiscBox.setValue((BigDecimal) null);
         stReqLbl.setValue("");
         stShortLbl.setValue("");
     }
@@ -692,6 +743,9 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             li.appendChild(new Listcell(fmt(l.getQty())));
             li.appendChild(new Listcell(TAKA + fmt(l.getPrice())));
             li.appendChild(new Listcell(TAKA + fmt(l.getGross())));
+            li.appendChild(new Listcell(l.getDiscount().signum() > 0
+                    ? TAKA + fmt(l.getDiscount()) + " (" + fmt(l.getSpecialDiscountPct()) + "%)"
+                    : "-"));
             li.appendChild(new Listcell(TAKA + fmt(l.getVat()) + " (" + fmt(l.getTaxRate()) + "%)"));
             li.appendChild(new Listcell(TAKA + fmt(l.getTotal())));
 
@@ -765,10 +819,79 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             applySiteDelivery(siteDelivery.isChecked());
         } else if (t == cancelBtn) {
             resetForm();
-        } else if (t == saveBtn || t == completeBtn || t == printBtn) {
+        } else if (t == saveBtn) {
+            saveDraft();
+        } else if (t == completeBtn || t == printBtn) {
             Messagebox.show("Later",
                     "Coming next", Messagebox.OK, Messagebox.INFORMATION);
         }
+    }
+
+    // ================================================================ save
+
+    private OrderHeader readHeader() {
+        OrderHeader h = new OrderHeader();
+        h.setOrgId(selectedId(orgList));
+        h.setWarehouseId(selectedId(whList));
+        h.setDocTypeId(selectedId(typeList));
+        h.setBpartnerId(selectedId(customerList));
+        h.setPriceListId(selectedId(priceListList));
+        h.setSalesRepId(selectedId(salesRepList));
+        h.setPaymentTermId(selectedId(paymentTermList));
+        h.setDateOrdered(toTimestamp(orderDate.getValue()));
+        h.setDatePromised(toTimestamp(deliveryDate.getValue()));
+        h.setDescription(notesBox.getValue());
+        h.setSalesType(selectedValue(salesTypeList));
+        h.setTerritoryId(selectedId(territoryList));
+        h.setSiteDelivery(siteDelivery.isChecked());
+        h.setSiteAddress(siteAddress.getValue());
+        return h;
+    }
+
+    private java.sql.Timestamp toTimestamp(java.util.Date d) {
+        return d == null ? null : new java.sql.Timestamp(d.getTime());
+    }
+
+    /** Save Draft: one click = one transaction. A second save of the same screen is refused. */
+    private void saveDraft() {
+        if (savedOrder != null) {
+            warn("This order is already saved as " + savedOrder.getDocumentNo()
+                    + ". Press New Order to start another one.");
+            return;
+        }
+        if (saving)
+            return;
+        saving = true;
+        saveBtn.setDisabled(true);
+        try {
+            SavedOrder so = salesOrderService.saveDraft(readHeader(), lines);
+            savedOrder = so;
+            docNoLbl.setValue(so.getDocumentNo());
+            statusBadge.setValue("Draft saved: " + so.getDocumentNo());
+            cancelBtn.setLabel("New Order");
+            addBtn.setDisabled(true);
+            Messagebox.show("Draft saved.\nDocument No: " + so.getDocumentNo()
+                    + "\nStatus: " + so.getDocStatus()
+                    + "\nLines total: " + TAKA + fmt(so.getTotalLines())
+                    + "\nGrand total (iDempiere): " + TAKA + fmt(so.getGrandTotal()),
+                    "Sales Order", Messagebox.OK, Messagebox.INFORMATION);
+        } catch (ValidationException ex) {
+            saveBtn.setDisabled(false);
+            warn(ex.getMessage());
+        } catch (RuntimeException ex) {
+            saveBtn.setDisabled(false);
+            warn("Could not save the order. Nothing was stored.\n" + ex.getMessage());
+        } finally {
+            saving = false;
+        }
+    }
+
+    private boolean lockedAfterSave() {
+        if (savedOrder == null)
+            return false;
+        warn("The order is saved as " + savedOrder.getDocumentNo()
+                + ". Editing a saved Draft is not available yet. Press New Order.");
+        return true;
     }
 
     /** Site Delivery on: customer address er jayga e site address textbox. */
@@ -781,6 +904,13 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     }
 
     private void resetForm() {
+        savedOrder = null;
+        saveBtn.setDisabled(false);
+        addBtn.setDisabled(false);
+        cancelBtn.setLabel("Cancel");
+        statusBadge.setValue("Draft (not saved)");
+        docNoLbl.setValue("Assigned on save");
+        notesBox.setValue("");
         orderDate.setValue(new java.util.Date());
         deliveryDate.setValue(null);
         salesTypeList.setSelectedIndex(0);
@@ -788,6 +918,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         applySiteDelivery(false);
         loadOrgs();
         loadTypes();
+        loadHeaderLookups();
         loadTerritories();
     }
 

@@ -19,6 +19,8 @@ public class SalesOrderLine {
     private BigDecimal qty = BigDecimal.ZERO;
     private BigDecimal price = BigDecimal.ZERO;
     private BigDecimal taxRate = BigDecimal.ZERO;
+    /** Special discount entered by the user, in percent of the gross amount (0 - 100). */
+    private BigDecimal specialDiscountPct = BigDecimal.ZERO;
 
     private BigDecimal gross = BigDecimal.ZERO;
     private BigDecimal discount = BigDecimal.ZERO;
@@ -119,6 +121,14 @@ public class SalesOrderLine {
 
     public void setTaxRate(BigDecimal taxRate) {
         this.taxRate = taxRate;
+    }
+
+    public BigDecimal getSpecialDiscountPct() {
+        return specialDiscountPct;
+    }
+
+    public void setSpecialDiscountPct(BigDecimal specialDiscountPct) {
+        this.specialDiscountPct = specialDiscountPct == null ? BigDecimal.ZERO : specialDiscountPct;
     }
 
     public BigDecimal getGross() {
