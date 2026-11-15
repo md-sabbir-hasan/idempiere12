@@ -11,9 +11,9 @@ public class SegmentService {
     private final SegmentDAO dao = new SegmentDAO();
 
     /** Segments the customer may buy from. Empty when no customer is selected or none is assigned. */
-    public List<Segment> getCustomerSegments(int bpartnerId) {
+    public List<Segment> getCustomerSegments(int bpartnerId, int salesRepId) {
         if (!ValidationUtils.isId(bpartnerId))
             return Collections.emptyList();
-        return dao.findByCustomer(bpartnerId);
+        return dao.findByCustomer(bpartnerId, salesRepId);
     }
 }

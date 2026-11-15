@@ -20,12 +20,12 @@ import org.mycompany.o2c.model.SavedOrder;
 import org.mycompany.o2c.model.SalesOrderLine;
 import org.mycompany.o2c.model.Segment;
 import org.mycompany.o2c.model.StockInfo;
-import org.mycompany.o2c.model.Warehouse;
 import org.mycompany.o2c.service.CategoryService;
 import org.mycompany.o2c.service.CustomerService;
 import org.mycompany.o2c.service.InventoryService;
 import org.mycompany.o2c.service.ProductService;
 import org.mycompany.o2c.service.SalesOrderService;
+import org.mycompany.o2c.service.HeaderLookupService;
 import org.mycompany.o2c.service.SegmentService;
 import org.mycompany.o2c.service.WarehouseService;
 import org.mycompany.o2c.util.ValidationException;
@@ -47,6 +47,8 @@ import org.zkoss.zul.Listheader;
 import org.zkoss.zul.Listitem;
 import org.zkoss.zul.Messagebox;
 import org.zkoss.zul.North;
+import org.zkoss.zul.Radio;
+import org.zkoss.zul.Radiogroup;
 import org.zkoss.zul.Textbox;
 
 /**
@@ -71,6 +73,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     private final WarehouseService warehouseService = new WarehouseService();
     private final CustomerService customerService = new CustomerService();
     private final SegmentService segmentService = new SegmentService();
+    private final HeaderLookupService headerLookupService = new HeaderLookupService();
     private final CategoryService categoryService = new CategoryService();
     private final ProductService productService = new ProductService();
     private final InventoryService inventoryService = new InventoryService();
@@ -87,6 +90,12 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     private Datebox deliveryDate = new Datebox();
     private Listbox priceListList = new Listbox();
     private Listbox salesRepList = new Listbox();
+    private Listbox locationList = new Listbox();
+    private Listbox departmentList = new Listbox();
+    private Radiogroup payGroup = new Radiogroup();
+    private Radio payCash = new Radio("Cash");
+    private Radio payCredit = new Radio("Credit");
+    private Radio paySample = new Radio("Sample");
     private Listbox paymentTermList = new Listbox();
     private Textbox notesBox = new Textbox();
     private Label docNoLbl = new Label("Assigned on save");
@@ -207,11 +216,22 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     private void styleInputs() {
         for (Listbox lb : new Listbox[] { orgList, whList, typeList, salesTypeList,
                 territoryList, customerList, segmentList, categoryList, productList,
-                priceListList, salesRepList, paymentTermList }) {
+                priceListList, salesRepList, paymentTermList, locationList, departmentList }) {
             lb.setMold("select");
             lb.setStyle(INPUT);
             lb.addEventListener(Events.ON_SELECT, this);
         }
+        whList.setDisabled(true);                       // Depot comes from the Territory
+        payCash.setValue("C");
+        payCredit.setValue("R");
+        paySample.setValue("S");
+        payCash.setStyle("margin-right:14px;");
+        payCredit.setStyle("margin-right:14px;");
+        payGroup.appendChild(payCash);
+        payGroup.appendChild(payCredit);
+        payGroup.appendChild(paySample);
+        payGroup.setSelectedItem(payCash);
+        orderDate.addEventListener(Events.ON_CHANGE, this);
         orderDate.setFormat("dd-MMM-yyyy");
         deliveryDate.setFormat("dd-MMM-yyyy");
         orderDate.setStyle("width:100%;");
@@ -285,12 +305,14 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         Div body = card("Order Information");
         body.setStyle("display:grid; grid-template-columns:130px 1fr 130px 1fr; "
                     + "gap:10px 16px; align-items:center;");
-        addRow(body, "Organization *", orgList, "Depot / Warehouse *", whList);
+        addRow(body, "Organization *", orgList, "Depot (from Territory)", whList);
         addRow(body, "Order Date *", orderDate, "Expected Delivery", deliveryDate);
         addRow(body, "Type of Order", typeList, "Sales Type", salesTypeList);
-        addRow(body, "Territory", territoryList, "Customer *", customerList);
+        addRow(body, "Territory *", territoryList, "Customer *", customerList);
         addRow(body, "Price List *", priceListList, "Sales Rep", salesRepList);
-        addRow(body, "Payment Term", paymentTermList, "Document No", docNoLbl);
+        addRow(body, "Location *", locationList, "Department *", departmentList);
+        addRow(body, "Payment Type *", payGroup, "Payment Term", paymentTermList);
+        addRow(body, "Document No", docNoLbl, "", new Label(""));
         body.appendChild(fieldLabel("Notes"));
         notesBox.setHflex("1");
         Div notesCell = new Div();
@@ -495,11 +517,17 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         loadWarehouses();
     }
 
+    /** Depot is not chosen by the user: it follows the Territory and the Order Date. */
     private void loadWarehouses() {
-        fill(whList, warehouseService.getWarehouses(selectedId(orgList)),
-                Warehouse::getId, Warehouse::getName);
+        Option depot = headerLookupService.getDepot(selectedId(territoryList),
+                toTimestamp(orderDate.getValue()));
+        List<Option> one = new ArrayList<Option>();
+        if (depot != null)
+            one.add(depot);
+        fill(whList, one, Option::getId, Option::getName);
         if (whList.getItemCount() == 2)
             whList.setSelectedIndex(1);
+        whList.setDisabled(true);
         refreshStock();
     }
 
@@ -514,6 +542,10 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         if (priceListList.getItemCount() == 2)
             priceListList.setSelectedIndex(1);
         fill(salesRepList, salesOrderService.getSalesReps(), Option::getId, Option::getName);
+        selectById(salesRepList, headerLookupService.getCurrentUserId());   // Officer = logged in user
+        fill(locationList, headerLookupService.getLocations(), Option::getId, Option::getName);
+        fill(departmentList, headerLookupService.getDepartments(), Option::getId, Option::getName);
+        payGroup.setSelectedItem(payCash);
         fill(paymentTermList, salesOrderService.getPaymentTerms(), Option::getId, Option::getName);
     }
 
@@ -526,6 +558,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
 
     /** Customer: Sales Type + Territory (blank = National). */
     private void loadCustomers() {
+        loadWarehouses();
         fill(customerList,
                 customerService.getCustomers(selectedId(territoryList), selectedValue(salesTypeList)),
                 Customer::getId, Customer::getName);
@@ -577,7 +610,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     // ---- Segment -> Category -> Product
 
     private void loadSegments(int bpId) {
-        List<Segment> segments = segmentService.getCustomerSegments(bpId);
+        List<Segment> segments = segmentService.getCustomerSegments(bpId, selectedId(salesRepList));
         fill(segmentList, segments, Segment::getId, Segment::getName);
 
         StringBuilder names = new StringBuilder();
@@ -587,6 +620,8 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             names.append(s.getName());
         }
         segmentsLbl.setValue(names.toString());
+        if (segmentList.getItemCount() == 2)
+            segmentList.setSelectedIndex(1);          // one segment only: choose it for the user
         segWarnLbl.setValue(segments.isEmpty()
                 ? "This customer has no segment assigned. Assign a segment to add products." : "");
         loadCategories();
@@ -796,6 +831,16 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             loadTerritories();
         } else if (t == territoryList) {
             loadCustomers();
+        } else if (t == orderDate) {
+            int before = selectedId(whList);
+            loadWarehouses();
+            if (before != selectedId(whList) && !lines.isEmpty()) {
+                lines.clear();
+                refreshLines();
+                warn("Depot changed for this date. Order lines were cleared.");
+            }
+        } else if (t == salesRepList) {
+            loadSegments(selectedId(customerList));
         } else if (t == customerList) {
             if (!lines.isEmpty()) {
                 lines.clear();
@@ -845,6 +890,10 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         h.setTerritoryId(selectedId(territoryList));
         h.setSiteDelivery(siteDelivery.isChecked());
         h.setSiteAddress(siteAddress.getValue());
+        h.setLocationId(selectedId(locationList));
+        h.setDepartmentId(selectedId(departmentList));
+        h.setPaymentType(payGroup.getSelectedItem() == null ? ""
+                : (String) payGroup.getSelectedItem().getValue());
         return h;
     }
 

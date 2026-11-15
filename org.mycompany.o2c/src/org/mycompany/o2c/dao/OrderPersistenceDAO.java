@@ -23,7 +23,7 @@ public class OrderPersistenceDAO {
 
     // custom columns that must be registered in the Application Dictionary
     private static final String[] HEADER_XX = { "XX_SalesType", "XX_Territory_ID",
-            "XX_IsSiteDelivery", "XX_SiteDeliveryAddress" };
+            "XX_IsSiteDelivery", "XX_SiteDeliveryAddress", "XX_PaymentType" };
     private static final String[] LINE_XX = { "XX_Segment_ID" };
 
     public SavedOrder saveDraft(OrderHeader h, List<SalesOrderLine> lines) {
@@ -52,6 +52,9 @@ public class OrderPersistenceDAO {
             order.setDatePromised(h.getDatePromised() != null ? h.getDatePromised() : h.getDateOrdered());
             order.setDescription(h.getDescription());
 
+            order.set_ValueOfColumn("User1_ID", Integer.valueOf(h.getLocationId()));    // Location
+            order.set_ValueOfColumn("User2_ID", Integer.valueOf(h.getDepartmentId()));  // Department
+            order.set_ValueOfColumn("XX_PaymentType", h.getPaymentType());
             order.set_ValueOfColumn("XX_SalesType", h.getSalesType());
             if (h.getTerritoryId() > 0)
                 order.set_ValueOfColumn("XX_Territory_ID", Integer.valueOf(h.getTerritoryId()));

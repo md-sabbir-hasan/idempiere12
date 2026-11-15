@@ -18,6 +18,9 @@ public class OrderHeader {
     private int territoryId;
     private boolean siteDelivery;
     private String siteAddress = "";
+    private int locationId;       // C_Order.User1_ID (Location)
+    private int departmentId;     // C_Order.User2_ID (Department)
+    private String paymentType = ""; // C = Cash, R = Credit, S = Sample
 
     public int getOrgId() { return orgId; }
     public void setOrgId(int v) { orgId = v; }
@@ -45,6 +48,12 @@ public class OrderHeader {
     public void setTerritoryId(int v) { territoryId = v; }
     public boolean isSiteDelivery() { return siteDelivery; }
     public void setSiteDelivery(boolean v) { siteDelivery = v; }
+    public int getLocationId() { return locationId; }
+    public void setLocationId(int v) { locationId = v; }
+    public int getDepartmentId() { return departmentId; }
+    public void setDepartmentId(int v) { departmentId = v; }
+    public String getPaymentType() { return paymentType; }
+    public void setPaymentType(String v) { paymentType = v == null ? "" : v; }
     public String getSiteAddress() { return siteAddress; }
     public void setSiteAddress(String v) { siteAddress = v == null ? "" : v; }
 }

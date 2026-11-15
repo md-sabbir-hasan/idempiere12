@@ -63,7 +63,12 @@ public class SalesOrderService {
     public SavedOrder saveDraft(OrderHeader h, List<SalesOrderLine> lines) {
         ValidationUtils.requireId(h.getOrgId(), "Select an Organization.");
         ValidationUtils.requireId(h.getBpartnerId(), "Select a customer.");
-        ValidationUtils.requireId(h.getWarehouseId(), "Select a Depot / Warehouse.");
+        ValidationUtils.requireId(h.getWarehouseId(),
+                "No Depot found. Select a Territory that has a Depot on the order date.");
+        ValidationUtils.requireId(h.getLocationId(), "Select a Location.");
+        ValidationUtils.requireId(h.getDepartmentId(), "Select a Department.");
+        if (!"C".equals(h.getPaymentType()) && !"R".equals(h.getPaymentType()) && !"S".equals(h.getPaymentType()))
+            throw new ValidationException("Select the Payment Type (Cash, Credit or Sample).");
         ValidationUtils.requireId(h.getDocTypeId(), "Select the Type of Order.");
         ValidationUtils.requireId(h.getPriceListId(), "Select a Price List.");
         ValidationUtils.requireNotNull(h.getDateOrdered(), "Enter the Order Date.");
