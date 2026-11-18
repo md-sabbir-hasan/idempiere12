@@ -2,6 +2,7 @@ package org.mycompany.o2c;
 
 import org.adempiere.webui.factory.IFormFactory;
 import org.adempiere.webui.panel.ADForm;
+import org.mycompany.o2c.ui.WOfficerAssignmentForm;
 import org.mycompany.o2c.ui.WSalesOrderForm;
 
 public class O2CFormFactory implements IFormFactory {
@@ -12,6 +13,8 @@ public class O2CFormFactory implements IFormFactory {
         if (formName.equals("org.mycompany.o2c.ui.WSalesOrderForm")
                 || formName.equals("org.mycompany.o2c.WSalesOrderForm"))
             return new WSalesOrderForm();
+        if (formName.equals("org.mycompany.o2c.ui.WOfficerAssignmentForm"))
+            return new WOfficerAssignmentForm();
         return null;
     }
 }
