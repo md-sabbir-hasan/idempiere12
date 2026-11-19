@@ -56,16 +56,14 @@ public class ProductDAO {
             productId, DBUtils.clientId(), date, bpartnerId);
     }
 
-    /** True when customer -> segment -> category -> product is a configured combination. */
-    public boolean isAllowedForCustomer(int productId, int segmentId, int categoryId, int bpartnerId) {
+    /** True when the product is in the category and the category belongs to the segment. */
+    public boolean isAllowedForSegment(int productId, int segmentId, int categoryId) {
         String ok = DBUtils.queryString(
             "SELECT 1 FROM M_Product p "
-          + "JOIN XX_SegmentCategory sc ON sc.M_Product_Category_ID=p.M_Product_Category_ID "
-          + "AND sc.IsActive='Y' "
-          + "JOIN XX_BPartnerSegment bs ON bs.XX_Segment_ID=sc.XX_Segment_ID AND bs.IsActive='Y' "
-          + "WHERE p.M_Product_ID=? AND sc.XX_Segment_ID=? AND sc.M_Product_Category_ID=? "
-          + "AND bs.C_BPartner_ID=? AND p.AD_Client_ID=? LIMIT 1",
-            productId, segmentId, categoryId, bpartnerId, DBUtils.clientId());
+          + "JOIN M_Product_Category pc ON pc.M_Product_Category_ID=p.M_Product_Category_ID "
+          + "WHERE p.M_Product_ID=? AND pc.M_Product_Category_ID=? AND pc.C_Activity_ID=? "
+          + "AND p.AD_Client_ID=? LIMIT 1",
+            productId, categoryId, segmentId, DBUtils.clientId());
         return !ok.isEmpty();
     }
 }

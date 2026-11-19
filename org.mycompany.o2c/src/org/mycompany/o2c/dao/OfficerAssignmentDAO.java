@@ -51,13 +51,16 @@ public class OfficerAssignmentDAO {
     public List<RegionNode> findRegions() {
         return DBUtils.queryList(
             "SELECT r.c_salesregion_id, r.name, COALESCE(n.parent_id, 0), "
-          + "COALESCE(r.xx_levelno, 0), COALESCE(r.xx_levelname, '') "
+          + "COALESCE(r.xx_levelno, 0), COALESCE(r.xx_levelname, ''), "
+          + "COALESCE(r.m_warehouse_id, 0), COALESCE(w.name, '') "
           + "FROM c_salesregion r "
+          + "LEFT JOIN m_warehouse w ON w.m_warehouse_id = r.m_warehouse_id "
           + "LEFT JOIN ad_treenode n ON n.node_id = r.c_salesregion_id AND n.ad_tree_id = "
           + "  (SELECT MIN(t.ad_tree_id) FROM ad_tree t WHERE t.ad_client_id = r.ad_client_id "
           + "   AND t.treetype = 'SR' AND t.isactive = 'Y') "
           + "WHERE r.ad_client_id = ? AND r.isactive = 'Y' ORDER BY r.name",
-            rs -> new RegionNode(rs.getInt(1), rs.getString(2), rs.getInt(3), rs.getInt(4), rs.getString(5)),
+            rs -> new RegionNode(rs.getInt(1), rs.getString(2), rs.getInt(3), rs.getInt(4), rs.getString(5),
+                    rs.getInt(6), rs.getString(7)),
             DBUtils.clientId());
     }
 
@@ -82,6 +85,16 @@ public class OfficerAssignmentDAO {
         else if (status == Status.ENDED)
             where.append(" AND o.enddate IS NOT NULL");
         return queryAssignments(where.toString(), params);
+    }
+
+    /** Assignments of one officer that are valid on the date (started, and not ended before it). */
+    public List<OfficerAssignment> findCurrentForOfficer(int officerId, Timestamp onDate) {
+        List<Object> params = new ArrayList<Object>();
+        params.add(Integer.valueOf(officerId));
+        params.add(onDate);
+        params.add(onDate);
+        return queryAssignments(" AND o.ad_user_id = ? AND o.startdate <= ? "
+                + "AND (o.enddate IS NULL OR o.enddate >= ?)", params);
     }
 
     public OfficerAssignment findById(int id) {

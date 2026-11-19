@@ -46,8 +46,8 @@ public class ProductService {
         return dao.findPrice(productId, bpartnerId, ts);
     }
 
-    /** True when the customer is allowed to buy this product through the segment and category. */
-    public boolean isValidSelection(int bpartnerId, int segmentId, int categoryId, int productId) {
-        return dao.isAllowedForCustomer(productId, segmentId, categoryId, bpartnerId);
+    /** True when the product is in the category and the category belongs to the segment. */
+    public boolean isValidSelection(int segmentId, int categoryId, int productId) {
+        return dao.isAllowedForSegment(productId, segmentId, categoryId);
     }
 }

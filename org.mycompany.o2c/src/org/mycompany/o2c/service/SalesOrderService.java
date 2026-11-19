@@ -34,16 +34,8 @@ public class SalesOrderService {
         this.discountService = discountService;
     }
 
-    public List<Option> getOrderTypes() {
-        return dao.findOrderTypes();
-    }
-
     public List<Option> getPriceLists() {
         return dao.findSalesPriceLists();
-    }
-
-    public List<Option> getSalesReps() {
-        return dao.findSalesReps();
     }
 
     public List<Option> getPaymentTerms() {
@@ -63,13 +55,15 @@ public class SalesOrderService {
     public SavedOrder saveDraft(OrderHeader h, List<SalesOrderLine> lines) {
         ValidationUtils.requireId(h.getOrgId(), "Select an Organization.");
         ValidationUtils.requireId(h.getBpartnerId(), "Select a customer.");
+        ValidationUtils.requireId(h.getDocTypeId(), "Select the Sales Type.");
+        ValidationUtils.requireId(h.getSegmentId(), "No Segment found. You need a current Officer Assignment.");
+        ValidationUtils.requireId(h.getTerritoryId(), "Select a Territory.");
         ValidationUtils.requireId(h.getWarehouseId(),
-                "No Depot found. Select a Territory that has a Depot on the order date.");
+                "No Depot found for this Territory. Set the Warehouse on the Sales Region.");
         ValidationUtils.requireId(h.getLocationId(), "Select a Location.");
         ValidationUtils.requireId(h.getDepartmentId(), "Select a Department.");
         if (!"C".equals(h.getPaymentType()) && !"R".equals(h.getPaymentType()) && !"S".equals(h.getPaymentType()))
             throw new ValidationException("Select the Payment Type (Cash, Credit or Sample).");
-        ValidationUtils.requireId(h.getDocTypeId(), "Select the Type of Order.");
         ValidationUtils.requireId(h.getPriceListId(), "Select a Price List.");
         ValidationUtils.requireNotNull(h.getDateOrdered(), "Enter the Order Date.");
         if (h.getDatePromised() != null && h.getDatePromised().before(h.getDateOrdered()))
@@ -105,8 +99,8 @@ public class SalesOrderService {
         if (product == null || product.getPrice() == null)
             throw new ValidationException("This product has no price in the Price List.");
 
-        if (!productService.isValidSelection(bpartnerId, segmentId, categoryId, productId))
-            throw new ValidationException("Invalid Segment / Category / Product combination for this customer.");
+        if (!productService.isValidSelection(segmentId, categoryId, productId))
+            throw new ValidationException("This product does not belong to your Segment.");
 
         for (SalesOrderLine l : existing) {
             if (l.getProductId() == productId)

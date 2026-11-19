@@ -22,9 +22,10 @@ import org.mycompany.o2c.util.ValidationException;
 public class OrderPersistenceDAO {
 
     // custom columns that must be registered in the Application Dictionary
-    private static final String[] HEADER_XX = { "XX_SalesType", "XX_Territory_ID",
+    // (Segment = C_Activity_ID and Sales Type = C_DocTypeTarget_ID are standard columns;
+    //  C_SalesRegion_ID = Territory must be added to C_Order, see db/02_default_tables.sql)
+    private static final String[] HEADER_XX = { "C_SalesRegion_ID",
             "XX_IsSiteDelivery", "XX_SiteDeliveryAddress", "XX_PaymentType" };
-    private static final String[] LINE_XX = { "XX_Segment_ID" };
 
     public SavedOrder saveDraft(OrderHeader h, List<SalesOrderLine> lines) {
         Properties ctx = Env.getCtx();
@@ -55,9 +56,9 @@ public class OrderPersistenceDAO {
             order.set_ValueOfColumn("User1_ID", Integer.valueOf(h.getLocationId()));    // Location
             order.set_ValueOfColumn("User2_ID", Integer.valueOf(h.getDepartmentId()));  // Department
             order.set_ValueOfColumn("XX_PaymentType", h.getPaymentType());
-            order.set_ValueOfColumn("XX_SalesType", h.getSalesType());
+            order.setC_Activity_ID(h.getSegmentId());                                  // Segment
             if (h.getTerritoryId() > 0)
-                order.set_ValueOfColumn("XX_Territory_ID", Integer.valueOf(h.getTerritoryId()));
+                order.set_ValueOfColumn("C_SalesRegion_ID", Integer.valueOf(h.getTerritoryId())); // Territory
             order.set_ValueOfColumn("XX_IsSiteDelivery", Boolean.valueOf(h.isSiteDelivery()));
             if (h.isSiteDelivery())
                 order.set_ValueOfColumn("XX_SiteDeliveryAddress", h.getSiteAddress());
@@ -66,7 +67,6 @@ public class OrderPersistenceDAO {
 
             for (SalesOrderLine l : lines) {
                 MOrderLine ol = new MOrderLine(order);
-                requireColumns(ol, LINE_XX, "C_OrderLine");
                 ol.setM_Product_ID(l.getProductId(), true);   // also takes the product UOM
                 ol.setQtyEntered(l.getQty());
                 ol.setQtyOrdered(l.getQty());
@@ -83,7 +83,7 @@ public class OrderPersistenceDAO {
                     ol.setPriceEntered(unit);
                     ol.setPriceActual(unit);
                 }
-                ol.set_ValueOfColumn("XX_Segment_ID", Integer.valueOf(l.getSegmentId()));
+                ol.setC_Activity_ID(l.getSegmentId());                    // Segment
                 ol.saveEx();
             }
 

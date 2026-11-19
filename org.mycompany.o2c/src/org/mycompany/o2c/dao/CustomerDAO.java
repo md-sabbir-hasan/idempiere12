@@ -1,49 +1,26 @@
 package org.mycompany.o2c.dao;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
 
 import org.mycompany.o2c.model.Customer;
-import org.mycompany.o2c.model.Option;
 import org.mycompany.o2c.util.DBUtils;
 
-/** Database access for customers (C_BPartner) and territories (XX_Territory). */
+/** Database access for customers (C_BPartner). */
 public class CustomerDAO {
 
-    /** Active territories of the sales type (L = Local, F = Foreign). */
-    public List<Option> findTerritories(String salesType) {
-        return DBUtils.queryList(
-            "SELECT t.XX_Territory_ID, t.Name FROM XX_Territory t "
-          + "WHERE t.IsActive='Y' AND t.AD_Client_ID=? AND t.SalesType=? ORDER BY t.Name",
-            rs -> new Option(rs.getInt(1), rs.getString(2)),
-            DBUtils.clientId(), salesType);
-    }
-
     /**
-     * Active customers. A territory filters directly; territoryId = 0 means "National":
-     * every customer whose territory has the given sales type.
+     * Active customers of a Territory: the customer has an active Location whose
+     * Sales Region (C_BPartner_Location.C_SalesRegion_ID) is the Territory.
      */
-    public List<Customer> findCustomers(int territoryId, String salesType) {
-        StringBuilder sql = new StringBuilder(
+    public List<Customer> findCustomers(int territoryId) {
+        return DBUtils.queryList(
             "SELECT bp.C_BPartner_ID, bp.Name FROM C_BPartner bp "
-          + "WHERE bp.IsActive='Y' AND bp.IsCustomer='Y' AND bp.AD_Client_ID=? ");
-        List<Object> params = new ArrayList<Object>();
-        params.add(DBUtils.clientId());
-
-        if (territoryId > 0) {
-            sql.append("AND bp.XX_Territory_ID=? ");
-            params.add(territoryId);
-        } else {
-            sql.append("AND EXISTS (SELECT 1 FROM XX_Territory t "
-                     + "  WHERE t.XX_Territory_ID=bp.XX_Territory_ID AND t.SalesType=?) ");
-            params.add(salesType);
-        }
-        sql.append("ORDER BY bp.Name");
-
-        return DBUtils.queryList(sql.toString(),
+          + "WHERE bp.IsActive='Y' AND bp.IsCustomer='Y' AND bp.AD_Client_ID=? "
+          + "AND EXISTS (SELECT 1 FROM C_BPartner_Location bl WHERE bl.C_BPartner_ID=bp.C_BPartner_ID "
+          + "AND bl.IsActive='Y' AND bl.C_SalesRegion_ID=?) ORDER BY bp.Name",
             rs -> new Customer(rs.getInt(1), rs.getString(2)),
-            params.toArray());
+            DBUtils.clientId(), territoryId);
     }
 
     /** Full customer record for the information card; null when the customer is not found. */

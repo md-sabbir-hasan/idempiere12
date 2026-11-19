@@ -6,7 +6,7 @@ import java.sql.Timestamp;
 public class OrderHeader {
     private int orgId;
     private int warehouseId;
-    private int docTypeId;
+    private int docTypeId;       // Sales Type = Document Type (C_Order.C_DocTypeTarget_ID)
     private int bpartnerId;
     private int priceListId;
     private int salesRepId;
@@ -14,7 +14,7 @@ public class OrderHeader {
     private Timestamp dateOrdered;
     private Timestamp datePromised;
     private String description = "";
-    private String salesType = "";
+    private int segmentId;       // C_Order.C_Activity_ID (Segment of the officer)
     private int territoryId;
     private boolean siteDelivery;
     private String siteAddress = "";
@@ -42,8 +42,8 @@ public class OrderHeader {
     public void setDatePromised(Timestamp v) { datePromised = v; }
     public String getDescription() { return description; }
     public void setDescription(String v) { description = v == null ? "" : v; }
-    public String getSalesType() { return salesType; }
-    public void setSalesType(String v) { salesType = v == null ? "" : v; }
+    public int getSegmentId() { return segmentId; }
+    public void setSegmentId(int v) { segmentId = v; }
     public int getTerritoryId() { return territoryId; }
     public void setTerritoryId(int v) { territoryId = v; }
     public boolean isSiteDelivery() { return siteDelivery; }

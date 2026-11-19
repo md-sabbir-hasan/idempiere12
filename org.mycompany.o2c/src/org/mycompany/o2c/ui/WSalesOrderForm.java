@@ -2,6 +2,7 @@ package org.mycompany.o2c.ui;
 
 import java.math.BigDecimal;
 import java.text.DecimalFormat;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
@@ -11,22 +12,26 @@ import org.adempiere.webui.component.Label;
 import org.adempiere.webui.panel.ADForm;
 import org.adempiere.webui.util.ZKUpdateUtil;
 import org.mycompany.o2c.model.Category;
+import org.mycompany.o2c.model.IdName;
 import org.mycompany.o2c.model.Customer;
+import org.mycompany.o2c.model.OfficerScope;
+import org.mycompany.o2c.model.OfficerScope.Territory;
 import org.mycompany.o2c.model.Option;
 import org.mycompany.o2c.model.OrderHeader;
+import org.mycompany.o2c.model.OrderRow;
 import org.mycompany.o2c.model.OrderTotals;
 import org.mycompany.o2c.model.Product;
 import org.mycompany.o2c.model.SavedOrder;
 import org.mycompany.o2c.model.SalesOrderLine;
-import org.mycompany.o2c.model.Segment;
 import org.mycompany.o2c.model.StockInfo;
 import org.mycompany.o2c.service.CategoryService;
 import org.mycompany.o2c.service.CustomerService;
 import org.mycompany.o2c.service.InventoryService;
+import org.mycompany.o2c.service.OfficerScopeService;
+import org.mycompany.o2c.service.OrderListService;
 import org.mycompany.o2c.service.ProductService;
 import org.mycompany.o2c.service.SalesOrderService;
 import org.mycompany.o2c.service.HeaderLookupService;
-import org.mycompany.o2c.service.SegmentService;
 import org.mycompany.o2c.service.WarehouseService;
 import org.mycompany.o2c.util.ValidationException;
 import org.mycompany.o2c.util.ValidationUtils;
@@ -72,7 +77,8 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     // ---- services (business logic) -- plain objects, created once per form
     private final WarehouseService warehouseService = new WarehouseService();
     private final CustomerService customerService = new CustomerService();
-    private final SegmentService segmentService = new SegmentService();
+    private final OfficerScopeService scopeService = new OfficerScopeService();
+    private final OrderListService orderListService = new OrderListService();
     private final HeaderLookupService headerLookupService = new HeaderLookupService();
     private final CategoryService categoryService = new CategoryService();
     private final ProductService productService = new ProductService();
@@ -82,14 +88,14 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     // ---- order header
     private Listbox orgList = new Listbox();
     private Listbox whList = new Listbox();
-    private Listbox typeList = new Listbox();
     private Listbox salesTypeList = new Listbox();
     private Listbox territoryList = new Listbox();
     private Listbox customerList = new Listbox();
     private Datebox orderDate = new Datebox();
     private Datebox deliveryDate = new Datebox();
     private Listbox priceListList = new Listbox();
-    private Listbox salesRepList = new Listbox();
+    private Label officerLbl = new Label("");
+    private Label segmentLbl = new Label("");
     private Listbox locationList = new Listbox();
     private Listbox departmentList = new Listbox();
     private Radiogroup payGroup = new Radiogroup();
@@ -108,7 +114,6 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     private Label paymentTermLbl = new Label("");
     private Label creditDaysLbl = new Label("");
     private Label contactLbl = new Label("");
-    private Label segmentsLbl = new Label("");
     private Label addressTitle = new Label("Delivery Address");
     private Label addressLbl = new Label("");
     private Checkbox siteDelivery = new Checkbox("Site Delivery");
@@ -116,7 +121,6 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     private Div siteAddressBox = new Div();
 
     // ---- add product panel
-    private Listbox segmentList = new Listbox();
     private Listbox categoryList = new Listbox();
     private Listbox productList = new Listbox();
     private Label segWarnLbl = new Label("");
@@ -161,6 +165,24 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     private SavedOrder savedOrder = null;
     private boolean saving = false;
 
+    // ---- the officer's own scope: Segment, Sales Types, Territories (from the Officer Assignment)
+    private OfficerScope scope = null;
+    private String scopeError = null;
+
+    // ---- two pages in one form: the order list, and the create page
+    private final Div listPage = new Div();
+    private final Div formPage = new Div();
+    private final Datebox fFrom = new Datebox();
+    private final Datebox fTo = new Datebox();
+    private final Textbox fCustomer = new Textbox();
+    private final Listbox fStatus = new Listbox();
+    private final Listbox orderGrid = new Listbox();
+    private final Label listCount = new Label("");
+    private final Button createBtn = new Button("+ Create Order");
+    private final Button backBtn = new Button("\u2190 Back to list");
+    private final Button searchBtn = new Button("Search");
+    private final Button resetBtn = new Button("Reset");
+
     @Override
     protected void initForm() {
         setStyle("background:#f1f5f9;");
@@ -168,11 +190,64 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         ZKUpdateUtil.setHeight(this, "100%");
 
         styleInputs();
+        loadScope();
+
+        buildListPage();
+        buildFormPage();
+        appendChild(listPage);
+        appendChild(formPage);
+
+        siteAddressBox.setVisible(false);
+        loadOrgs();
+        loadHeaderLookups();
+        applyScope();
+        refreshLines();
+
+        refreshOrderList();
+        showList();
+    }
+
+    /** Reads the logged in officer's assignment. On a problem the message is shown on the list page. */
+    private void loadScope() {
+        try {
+            scope = scopeService.load(headerLookupService.getCurrentUserId(), LocalDate.now());
+            scopeError = null;
+        } catch (ValidationException ex) {
+            scope = null;
+            scopeError = ex.getMessage();
+        } catch (RuntimeException ex) {
+            scope = null;
+            scopeError = "Could not read the Officer Assignment: " + ex.getMessage();
+        }
+    }
+
+    private void showList() {
+        listPage.setVisible(true);
+        formPage.setVisible(false);
+    }
+
+    private void showForm() {
+        listPage.setVisible(false);
+        formPage.setVisible(true);
+    }
+
+    /** Create Order: a fresh form on its own page. */
+    private void openCreate() {
+        if (scope == null) {
+            warn(scopeError == null ? "You have no current Officer Assignment." : scopeError);
+            return;
+        }
+        resetForm();
+        showForm();
+    }
+
+    private void buildFormPage() {
+        ZKUpdateUtil.setHeight(formPage, "100%");
 
         Borderlayout main = new Borderlayout();
         ZKUpdateUtil.setWidth(main, "100%");
         ZKUpdateUtil.setHeight(main, "100%");
-        appendChild(main);
+        formPage.appendChild(main);
 
         North north = new North();
         ZKUpdateUtil.setVflex(north, "min");
@@ -198,25 +273,171 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
 
         page.appendChild(buildAddProductCard());
         page.appendChild(buildItemsCard());
+    }
 
-        salesTypeList.appendItem("Local", CustomerService.LOCAL);
-        salesTypeList.appendItem("Foreign", CustomerService.FOREIGN);
-        salesTypeList.setSelectedIndex(0);
-        siteAddressBox.setVisible(false);
+    // ============================================================ list page
 
-        loadOrgs();
-        loadTypes();
-        loadHeaderLookups();
-        loadTerritories();
-        refreshLines();
+    private void buildListPage() {
+        listPage.setStyle("height:100%; overflow:auto;");
+
+        // header
+        Div bar = new Div();
+        bar.setStyle("display:flex; align-items:center; justify-content:space-between; margin:12px 12px 0 12px;");
+        Div titles = new Div();
+        Label title = new Label("Sales Order");
+        title.setStyle("display:block; font-size:22px; font-weight:700; color:#0f172a;");
+        Label sub = new Label("Your sales orders. Press Create Order to enter a new one.");
+        sub.setStyle("display:block; font-size:13px; color:#64748b; margin-top:2px;");
+        titles.appendChild(title);
+        titles.appendChild(sub);
+        bar.appendChild(titles);
+        bar.appendChild(createBtn);
+        listPage.appendChild(bar);
+
+        if (scopeError != null) {
+            Label notice = new Label(scopeError);
+            notice.setStyle("display:block; margin:12px 12px 0 12px; padding:10px 14px; background:#fffbeb; "
+                          + "border:1px solid #fcd34d; border-radius:10px; color:#92400e;");
+            listPage.appendChild(notice);
+        }
+
+        // filters
+        Div card = new Div();
+        card.setStyle(CARD);
+        Div g = new Div();
+        g.setStyle("display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px 16px;");
+        g.appendChild(listField("Order Date From", fFrom));
+        g.appendChild(listField("Order Date To", fTo));
+        g.appendChild(listField("Customer", fCustomer));
+        g.appendChild(listField("Status", fStatus));
+        card.appendChild(g);
+        Div buttons = new Div();
+        buttons.setStyle("margin-top:14px;");
+        buttons.appendChild(searchBtn);
+        buttons.appendChild(resetBtn);
+        card.appendChild(buttons);
+        listPage.appendChild(card);
+
+        // list
+        Div listCard = new Div();
+        listCard.setStyle(CARD);
+        listCount.setStyle("display:block; font-size:13px; color:#64748b; margin-bottom:8px;");
+        listCard.appendChild(listCount);
+
+        orderGrid.setMold("paging");
+        orderGrid.setPageSize(15);
+        orderGrid.setEmptyMessage("No orders found.");
+        ZKUpdateUtil.setWidth(orderGrid, "100%");
+        // Pixel widths (percent widths collapse the columns in a paging Listbox);
+        // only Customer stretches, and the table scrolls sideways on a narrow screen.
+        orderGrid.setSizedByContent(false);
+        orderGrid.setStyle("overflow-x:auto;");
+        Listhead head = new Listhead();
+        head.setSizable(true);
+        String[][] cols = { { "Document No", "140px" }, { "Order Date", "120px" }, { "Customer", null },
+                { "Territory", "170px" }, { "Sales Type", "150px" }, { "Segment", "140px" },
+                { "Grand Total", "130px" }, { "Status", "120px" } };
+        for (String[] c : cols) {
+            Listheader h = new Listheader(c[0]);
+            if (c[1] != null)
+                h.setWidth(c[1]);
+            else {
+                h.setHflex("1");
+                
+            }
+            if ("Grand Total".equals(c[0]))
+                h.setAlign("right");
+            head.appendChild(h);
+        }
+        orderGrid.appendChild(head);
+        listCard.appendChild(orderGrid);
+        listPage.appendChild(listCard);
+    }
+
+    private Div listField(String label, Component input) {
+        Div d = new Div();
+        Label l = new Label(label);
+        l.setStyle("display:block; font-size:12px; color:#64748b; margin-bottom:4px;");
+        d.appendChild(l);
+        d.appendChild(input);
+        return d;
+    }
+
+    private void resetOrderFilters() {
+        fFrom.setValueInLocalDate(LocalDate.now().minusDays(30));
+        fTo.setValue(null);
+        fCustomer.setValue("");
+        fStatus.setSelectedIndex(0);
+    }
+
+    private void refreshOrderList() {
+        List<OrderRow> rows;
+        try {
+            rows = orderListService.list(headerLookupService.getCurrentUserId(),
+                    fFrom.getValueInLocalDate(), fTo.getValueInLocalDate(),
+                    fCustomer.getValue(), selectedValue(fStatus));
+        } catch (ValidationException ex) {
+            warn(ex.getMessage());
+            return;
+        } catch (RuntimeException ex) {
+            warn("Could not load the order list: " + ex.getMessage());
+            return;
+        }
+        orderGrid.getItems().clear();
+        java.text.SimpleDateFormat df = new java.text.SimpleDateFormat("dd-MMM-yyyy");
+        for (OrderRow r : rows) {
+            Listitem li = new Listitem();
+            Listcell no = new Listcell(r.documentNo());
+            no.setStyle("font-weight:600;");
+            li.appendChild(no);
+            li.appendChild(new Listcell(r.dateOrdered() == null ? "" : df.format(r.dateOrdered())));
+            li.appendChild(new Listcell(r.customer()));
+            li.appendChild(new Listcell(r.territory()));
+            li.appendChild(new Listcell(r.salesType()));
+            li.appendChild(new Listcell(r.segment()));
+            Listcell gt = new Listcell(TAKA + fmt(r.grandTotal()));
+            gt.setStyle("text-align:right; white-space:nowrap;");
+            li.appendChild(gt);
+            Listcell st = new Listcell();
+            Label badge = new Label(statusText(r.docStatus()));
+            badge.setStyle(statusStyle(r.docStatus()));
+            st.appendChild(badge);
+            li.appendChild(st);
+            orderGrid.appendChild(li);
+        }
+        listCount.setValue(rows.size() + (rows.size() == 1 ? " order" : " orders"));
+    }
+
+    private static String statusText(String st) {
+        if (st == null)
+            return "";
+        switch (st) {
+            case "DR": return "Draft";
+            case "IP": return "In Progress";
+            case "CO": return "Completed";
+            case "CL": return "Closed";
+            case "VO": return "Voided";
+            case "RE": return "Reversed";
+            case "NA": return "Not Approved";
+            default: return st;
+        }
+    }
+
+    private static String statusStyle(String st) {
+        String base = "border-radius:999px; padding:2px 10px; font-size:12px; font-weight:600; ";
+        if ("CO".equals(st) || "CL".equals(st))
+            return base + "background:#dcfce7; color:#166534;";
+        if ("VO".equals(st) || "RE".equals(st) || "NA".equals(st))
+            return base + "background:#fee2e2; color:#991b1b;";
+        return base + "background:#dbeafe; color:#1d4ed8;";
     }
 
     // ================================================================== UI
 
     private void styleInputs() {
-        for (Listbox lb : new Listbox[] { orgList, whList, typeList, salesTypeList,
-                territoryList, customerList, segmentList, categoryList, productList,
-                priceListList, salesRepList, paymentTermList, locationList, departmentList }) {
+        for (Listbox lb : new Listbox[] { orgList, whList, salesTypeList,
+                territoryList, customerList, categoryList, productList,
+                priceListList, paymentTermList, locationList, departmentList }) {
             lb.setMold("select");
             lb.setStyle(INPUT);
             lb.addEventListener(Events.ON_SELECT, this);
@@ -231,7 +452,6 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         payGroup.appendChild(payCredit);
         payGroup.appendChild(paySample);
         payGroup.setSelectedItem(payCash);
-        orderDate.addEventListener(Events.ON_CHANGE, this);
         orderDate.setFormat("dd-MMM-yyyy");
         deliveryDate.setFormat("dd-MMM-yyyy");
         orderDate.setStyle("width:100%;");
@@ -262,6 +482,31 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         btn(cancelBtn, "#fef2f2", "#dc2626", "#fecaca");
         btn(addBtn, "#2563eb", "#ffffff", null);
         btn(clearBtn, "#ffffff", "#334155", "#cbd5e1");
+        btn(backBtn, "#ffffff", "#334155", "#cbd5e1");
+        btn(createBtn, "#2563eb", "#ffffff", null);
+        btn(searchBtn, "#2563eb", "#ffffff", null);
+        btn(resetBtn, "#ffffff", "#334155", "#cbd5e1");
+
+        // order list filters
+        fFrom.setFormat("dd-MMM-yyyy");
+        fTo.setFormat("dd-MMM-yyyy");
+        ZKUpdateUtil.setWidth(fFrom, "100%");
+        ZKUpdateUtil.setWidth(fTo, "100%");
+        fCustomer.setStyle(INPUT);
+        fCustomer.setPlaceholder("Part of the customer name");
+        fStatus.setMold("select");
+        fStatus.setStyle(INPUT);
+        fStatus.appendItem("All", "");
+        fStatus.appendItem("Draft", "DR");
+        fStatus.appendItem("In Progress", "IP");
+        fStatus.appendItem("Completed", "CO");
+        fStatus.appendItem("Closed", "CL");
+        fStatus.appendItem("Voided", "VO");
+        resetOrderFilters();
+
+        segmentLbl.setStyle("font-weight:700; color:#1d4ed8; background:#dbeafe; padding:3px 14px; "
+                          + "border-radius:999px;");
+        officerLbl.setStyle("font-weight:700; color:#0f172a;");
     }
 
     private void btn(Button b, String bg, String fg, String border) {
@@ -278,15 +523,16 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
                    + "background:#ffffff; border:1px solid #e2e8f0; border-radius:12px;");
 
         Div left = new Div();
-        Label title = new Label("Sales Order Primitek");
+        Label title = new Label("New Sales Order");
         title.setStyle("display:block; font-size:22px; font-weight:700; color:#0f172a;");
-        Label sub = new Label("Create and manage sales orders");
+        Label sub = new Label("Segment, Sales Type and Territory come from your Officer Assignment");
         sub.setStyle("display:block; color:#64748b; font-size:13px; margin-top:2px;");
         left.appendChild(title);
         left.appendChild(sub);
 
         Div right = new Div();
         right.setStyle("display:flex; align-items:center; flex-wrap:wrap;");
+        right.appendChild(backBtn);
         Label badge = statusBadge;
         badge.setStyle("background:#dbeafe; color:#1d4ed8; font-weight:600; "
                      + "padding:5px 18px; border-radius:999px; margin-right:8px;");
@@ -305,11 +551,13 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         Div body = card("Order Information");
         body.setStyle("display:grid; grid-template-columns:130px 1fr 130px 1fr; "
                     + "gap:10px 16px; align-items:center;");
-        addRow(body, "Organization *", orgList, "Depot (from Territory)", whList);
+        Div segCell = new Div();
+        segCell.appendChild(segmentLbl);
+        addRow(body, "Segment", segCell, "Officer", officerLbl);
+        addRow(body, "Sales Type *", salesTypeList, "Territory *", territoryList);
+        addRow(body, "Customer *", customerList, "Depot (from Territory)", whList);
+        addRow(body, "Organization *", orgList, "Price List *", priceListList);
         addRow(body, "Order Date *", orderDate, "Expected Delivery", deliveryDate);
-        addRow(body, "Type of Order", typeList, "Sales Type", salesTypeList);
-        addRow(body, "Territory *", territoryList, "Customer *", customerList);
-        addRow(body, "Price List *", priceListList, "Sales Rep", salesRepList);
         addRow(body, "Location *", locationList, "Department *", departmentList);
         addRow(body, "Payment Type *", payGroup, "Payment Term", paymentTermList);
         addRow(body, "Document No", docNoLbl, "", new Label(""));
@@ -336,7 +584,6 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         kvRow(kv, "Payment Term:", paymentTermLbl);
         kvRow(kv, "Credit Days:", creditDaysLbl);
         kvRow(kv, "Contact:", contactLbl);
-        kvRow(kv, "Segments:", segmentsLbl);
         body.appendChild(kv);
 
         // Site Delivery: tick dile Delivery Address er jayga e site address textbox
@@ -360,7 +607,6 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
 
         Div row1 = new Div();
         row1.setStyle("display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:12px;");
-        row1.appendChild(pickCell("Segment *", segmentList));
         row1.appendChild(pickCell("Category *", categoryList));
         row1.appendChild(pickCell("Product *", productList));
 
@@ -514,16 +760,14 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         fill(orgList, warehouseService.getOrganizations(), Option::getId, Option::getName);
         if (orgList.getItemCount() == 2)
             orgList.setSelectedIndex(1);
-        loadWarehouses();
     }
 
-    /** Depot is not chosen by the user: it follows the Territory and the Order Date. */
+    /** Depot is not chosen by the user: it is the Warehouse of the selected Territory. */
     private void loadWarehouses() {
-        Option depot = headerLookupService.getDepot(selectedId(territoryList),
-                toTimestamp(orderDate.getValue()));
+        Territory t = selectedTerritory();
         List<Option> one = new ArrayList<Option>();
-        if (depot != null)
-            one.add(depot);
+        if (t != null && t.warehouseId() > 0)
+            one.add(new Option(t.warehouseId(), t.warehouseName()));
         fill(whList, one, Option::getId, Option::getName);
         if (whList.getItemCount() == 2)
             whList.setSelectedIndex(1);
@@ -531,40 +775,64 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         refreshStock();
     }
 
-    private void loadTypes() {
-        fill(typeList, salesOrderService.getOrderTypes(), Option::getId, Option::getName);
-        if (typeList.getItemCount() == 2)
-            typeList.setSelectedIndex(1);
-    }
-
     private void loadHeaderLookups() {
         fill(priceListList, salesOrderService.getPriceLists(), Option::getId, Option::getName);
         if (priceListList.getItemCount() == 2)
             priceListList.setSelectedIndex(1);
-        fill(salesRepList, salesOrderService.getSalesReps(), Option::getId, Option::getName);
-        selectById(salesRepList, headerLookupService.getCurrentUserId());   // Officer = logged in user
         fill(locationList, headerLookupService.getLocations(), Option::getId, Option::getName);
         fill(departmentList, headerLookupService.getDepartments(), Option::getId, Option::getName);
         payGroup.setSelectedItem(payCash);
         fill(paymentTermList, salesOrderService.getPaymentTerms(), Option::getId, Option::getName);
     }
 
-    /** Territory: Sales Type onujayi. */
+    /** Segment, Officer, Sales Types and Territories: all from the officer's assignment. */
+    private void applyScope() {
+        if (scope == null) {
+            segmentLbl.setValue("-");
+            officerLbl.setValue("");
+            fill(salesTypeList, new ArrayList<IdName>(), IdName::id, IdName::name);
+            loadTerritories();
+            return;
+        }
+        segmentLbl.setValue(scope.segmentName());
+        officerLbl.setValue(scope.officerName());
+        fill(salesTypeList, scope.salesTypes(), IdName::id, IdName::name);
+        if (salesTypeList.getItemCount() == 2)
+            salesTypeList.setSelectedIndex(1);          // one Sales Type only: choose it for the user
+        loadTerritories();
+        loadCategories();
+    }
+
+    /** Territories of the selected Sales Type (the officer's own regions only). */
     private void loadTerritories() {
-        fill(territoryList, customerService.getTerritories(selectedValue(salesTypeList)),
-                Option::getId, Option::getName);
+        List<Territory> list = scope == null ? new ArrayList<Territory>()
+                : scope.territoriesFor(selectedId(salesTypeList));
+        fill(territoryList, list, Territory::regionId, Territory::name);
+        if (territoryList.getItemCount() == 2)
+            territoryList.setSelectedIndex(1);          // one Territory only: choose it for the user
         loadCustomers();
     }
 
-    /** Customer: Sales Type + Territory (blank = National). */
+    /** Customers of the selected Territory. */
     private void loadCustomers() {
         loadWarehouses();
-        fill(customerList,
-                customerService.getCustomers(selectedId(territoryList), selectedValue(salesTypeList)),
+        fill(customerList, customerService.getCustomers(selectedId(territoryList)),
                 Customer::getId, Customer::getName);
         lines.clear();
         refreshLines();
         clearCustomerInfo();
+    }
+
+    private Territory selectedTerritory() {
+        if (scope == null)
+            return null;
+        int regionId = selectedId(territoryList);
+        int docTypeId = selectedId(salesTypeList);
+        for (Territory t : scope.territories()) {
+            if (t.regionId() == regionId && t.docTypeId() == docTypeId)
+                return t;
+        }
+        return null;
     }
 
     private void loadCustomerInfo(int bpId) {
@@ -583,9 +851,6 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         selectById(paymentTermList, salesOrderService.getCustomerPaymentTerm(bpId));
         creditDaysLbl.setValue(c.getCreditDays() + " days");
         vatRateLbl.setValue(fmt(c.getVatRate()) + " %");
-
-        // customer er segment gulo = Segment dropdown er option
-        loadSegments(bpId);
     }
 
     private void clearCustomerInfo() {
@@ -596,40 +861,23 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         paymentTermLbl.setValue("");
         creditDaysLbl.setValue("");
         contactLbl.setValue("");
-        segmentsLbl.setValue("");
         addressLbl.setValue("");
-        segWarnLbl.setValue("");
-        clearList(segmentList);
-        clearList(categoryList);
+        if (categoryList.getItemCount() > 0)
+            categoryList.setSelectedIndex(0);
         clearList(productList);
         clearProductInfo();
         qtyBox.setValue((BigDecimal) null);
         spDiscBox.setValue((BigDecimal) null);
     }
 
-    // ---- Segment -> Category -> Product
-
-    private void loadSegments(int bpId) {
-        List<Segment> segments = segmentService.getCustomerSegments(bpId, selectedId(salesRepList));
-        fill(segmentList, segments, Segment::getId, Segment::getName);
-
-        StringBuilder names = new StringBuilder();
-        for (Segment s : segments) {
-            if (names.length() > 0)
-                names.append(", ");
-            names.append(s.getName());
-        }
-        segmentsLbl.setValue(names.toString());
-        if (segmentList.getItemCount() == 2)
-            segmentList.setSelectedIndex(1);          // one segment only: choose it for the user
-        segWarnLbl.setValue(segments.isEmpty()
-                ? "This customer has no segment assigned. Assign a segment to add products." : "");
-        loadCategories();
-    }
+    // ---- Category -> Product (the Segment is fixed: it is the officer's Segment)
 
     private void loadCategories() {
-        fill(categoryList, categoryService.getSegmentCategories(selectedId(segmentList)),
-                Category::getId, Category::getName);
+        List<Category> cats = scope == null ? new ArrayList<Category>()
+                : categoryService.getSegmentCategories(scope.segmentId());
+        fill(categoryList, cats, Category::getId, Category::getName);
+        segWarnLbl.setValue(scope != null && cats.isEmpty()
+                ? "No product category is linked to your Segment (" + scope.segmentName() + ")." : "");
         loadProducts();
     }
 
@@ -717,7 +965,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         try {
             SalesOrderLine line = salesOrderService.buildLine(
                     selectedId(customerList), selectedId(whList),
-                    selectedId(segmentList), selectedLabel(segmentList),
+                    scope == null ? 0 : scope.segmentId(), scope == null ? "" : scope.segmentName(),
                     selectedId(categoryList), selectedLabel(categoryList),
                     selectedId(productList), curProduct, qtyBox.getValue(),
                     spDiscBox.getValue(), lines);
@@ -736,7 +984,6 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         SalesOrderLine l = lines.remove(idx);
         refreshLines();
 
-        selectById(segmentList, l.getSegmentId());
         loadCategories();
         selectById(categoryList, l.getCategoryId());
         loadProducts();
@@ -755,9 +1002,9 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     }
 
     private void clearPanel() {
-        if (segmentList.getItemCount() > 0)
-            segmentList.setSelectedIndex(0);
-        loadCategories();
+        if (categoryList.getItemCount() > 0)
+            categoryList.setSelectedIndex(0);
+        loadProducts();
         qtyBox.setValue((BigDecimal) null);
         spDiscBox.setValue((BigDecimal) null);
         stReqLbl.setValue("");
@@ -824,23 +1071,13 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         }
 
         if (t == orgList) {
-            loadWarehouses();
+            // nothing to do: the Depot follows the Territory
         } else if (t == whList) {
             refreshStock();
         } else if (t == salesTypeList) {
             loadTerritories();
         } else if (t == territoryList) {
             loadCustomers();
-        } else if (t == orderDate) {
-            int before = selectedId(whList);
-            loadWarehouses();
-            if (before != selectedId(whList) && !lines.isEmpty()) {
-                lines.clear();
-                refreshLines();
-                warn("Depot changed for this date. Order lines were cleared.");
-            }
-        } else if (t == salesRepList) {
-            loadSegments(selectedId(customerList));
         } else if (t == customerList) {
             if (!lines.isEmpty()) {
                 lines.clear();
@@ -848,8 +1085,6 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
                 warn("Customer changed. Order lines were cleared.");
             }
             loadCustomerInfo(selectedId(customerList));
-        } else if (t == segmentList) {
-            loadCategories();
         } else if (t == categoryList) {
             loadProducts();
         } else if (t == productList) {
@@ -866,6 +1101,16 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             resetForm();
         } else if (t == saveBtn) {
             saveDraft();
+        } else if (t == createBtn) {
+            openCreate();
+        } else if (t == backBtn) {
+            showList();
+            refreshOrderList();
+        } else if (t == searchBtn) {
+            refreshOrderList();
+        } else if (t == resetBtn) {
+            resetOrderFilters();
+            refreshOrderList();
         } else if (t == completeBtn || t == printBtn) {
             Messagebox.show("Later",
                     "Coming next", Messagebox.OK, Messagebox.INFORMATION);
@@ -878,15 +1123,15 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         OrderHeader h = new OrderHeader();
         h.setOrgId(selectedId(orgList));
         h.setWarehouseId(selectedId(whList));
-        h.setDocTypeId(selectedId(typeList));
+        h.setDocTypeId(selectedId(salesTypeList));
         h.setBpartnerId(selectedId(customerList));
         h.setPriceListId(selectedId(priceListList));
-        h.setSalesRepId(selectedId(salesRepList));
+        h.setSalesRepId(scope == null ? 0 : scope.officerId());
         h.setPaymentTermId(selectedId(paymentTermList));
         h.setDateOrdered(toTimestamp(orderDate.getValue()));
         h.setDatePromised(toTimestamp(deliveryDate.getValue()));
         h.setDescription(notesBox.getValue());
-        h.setSalesType(selectedValue(salesTypeList));
+        h.setSegmentId(scope == null ? 0 : scope.segmentId());
         h.setTerritoryId(selectedId(territoryList));
         h.setSiteDelivery(siteDelivery.isChecked());
         h.setSiteAddress(siteAddress.getValue());
@@ -910,6 +1155,10 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         }
         if (saving)
             return;
+        if (scope == null) {
+            warn(scopeError == null ? "You have no current Officer Assignment." : scopeError);
+            return;
+        }
         saving = true;
         saveBtn.setDisabled(true);
         try {
@@ -962,13 +1211,11 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         notesBox.setValue("");
         orderDate.setValue(new java.util.Date());
         deliveryDate.setValue(null);
-        salesTypeList.setSelectedIndex(0);
         siteDelivery.setChecked(false);
         applySiteDelivery(false);
         loadOrgs();
-        loadTypes();
         loadHeaderLookups();
-        loadTerritories();
+        applyScope();
     }
 
     private void warn(String msg) {
