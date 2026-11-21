@@ -19,7 +19,12 @@ public class OrderListDAO {
             String customerLike, String docStatus) {
         StringBuilder sql = new StringBuilder(
             "SELECT o.c_order_id, o.documentno, o.dateordered, bp.name, COALESCE(r.name, ''), "
-          + "COALESCE(d.name, ''), COALESCE(a.name, ''), o.grandtotal, o.docstatus "
+          + "COALESCE(d.name, ''), COALESCE(a.name, ''), o.grandtotal, o.docstatus, "
+          + "COALESCE((SELECT n.name || CASE WHEN u.name IS NULL THEN '' ELSE ' - ' || u.name END "
+          + "FROM ad_wf_activity wa JOIN ad_wf_node n ON n.ad_wf_node_id = wa.ad_wf_node_id "
+          + "LEFT JOIN ad_user u ON u.ad_user_id = wa.ad_user_id "
+          + "WHERE wa.ad_table_id = 259 AND wa.record_id = o.c_order_id AND wa.processed = 'N' "
+          + "ORDER BY wa.ad_wf_activity_id DESC LIMIT 1), '') "
           + "FROM c_order o JOIN c_bpartner bp ON bp.c_bpartner_id = o.c_bpartner_id "
           + "LEFT JOIN c_salesregion r ON r.c_salesregion_id = o.c_salesregion_id "
           + "LEFT JOIN c_doctype d ON d.c_doctype_id = o.c_doctypetarget_id "
@@ -47,6 +52,6 @@ public class OrderListDAO {
         sql.append(" ORDER BY o.dateordered DESC, o.c_order_id DESC LIMIT 500");
         return DBUtils.queryList(sql.toString(), rs -> new OrderRow(rs.getInt(1), rs.getString(2),
                 rs.getTimestamp(3), rs.getString(4), rs.getString(5), rs.getString(6), rs.getString(7),
-                rs.getBigDecimal(8), rs.getString(9)), params.toArray());
+                rs.getBigDecimal(8), rs.getString(9), rs.getString(10)), params.toArray());
     }
 }

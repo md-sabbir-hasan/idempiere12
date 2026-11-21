@@ -1,5 +1,6 @@
 package org.mycompany.o2c.dao;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Properties;
 
@@ -18,23 +19,44 @@ import org.mycompany.o2c.util.ValidationException;
  * Stores the order through the standard iDempiere models (MOrder / MOrderLine) inside ONE
  * transaction. Nothing is committed unless the header and every line were saved.
  * The order stays Drafted: no DocAction (complete / prepare), no reservation, no shipment/invoice.
+ * Submitting for approval is a separate step: see ApprovalDAO.
  */
 public class OrderPersistenceDAO {
 
     // custom columns that must be registered in the Application Dictionary
     // (Segment = C_Activity_ID and Sales Type = C_DocTypeTarget_ID are standard columns;
-    //  C_SalesRegion_ID = Territory must be added to C_Order, see db/02_default_tables.sql)
+    //  C_SalesRegion_ID = Territory must be added to C_Order, see db/02_default_tables.sql;
+    //  XX_SpecialDiscount is used by the approval workflow, see db/03_approval.sql)
     private static final String[] HEADER_XX = { "C_SalesRegion_ID",
-            "XX_IsSiteDelivery", "XX_SiteDeliveryAddress", "XX_PaymentType" };
+            "XX_IsSiteDelivery", "XX_SiteDeliveryAddress", "XX_PaymentType", "XX_SpecialDiscount" };
 
+    /** Stores a new Draft. */
     public SavedOrder saveDraft(OrderHeader h, List<SalesOrderLine> lines) {
+        return store(0, h, lines);
+    }
+
+    /** Replaces header and lines of an existing Draft of the same officer. */
+    public SavedOrder updateDraft(int orderId, OrderHeader h, List<SalesOrderLine> lines) {
+        return store(orderId, h, lines);
+    }
+
+    private SavedOrder store(int orderId, OrderHeader h, List<SalesOrderLine> lines) {
         Properties ctx = Env.getCtx();
         String trxName = Trx.createTrxName("O2CDraft");
         Trx trx = Trx.get(trxName, true);
         try {
             MBPartner bp = new MBPartner(ctx, h.getBpartnerId(), trxName);
 
-            MOrder order = new MOrder(ctx, 0, trxName);
+            MOrder order = new MOrder(ctx, orderId, trxName);
+            if (orderId > 0) {
+                if (order.get_ID() != orderId)
+                    throw new ValidationException("The order was not found.");
+                if (!MOrder.DOCSTATUS_Drafted.equals(order.getDocStatus()))
+                    throw new ValidationException("Only a Draft order can be changed. This order is "
+                            + order.getDocStatus() + ".");
+                if (order.getSalesRep_ID() != h.getSalesRepId())
+                    throw new ValidationException("This order belongs to another officer.");
+            }
             requireColumns(order, HEADER_XX, "C_Order");
 
             order.setAD_Org_ID(h.getOrgId());
@@ -60,10 +82,21 @@ public class OrderPersistenceDAO {
             if (h.getTerritoryId() > 0)
                 order.set_ValueOfColumn("C_SalesRegion_ID", Integer.valueOf(h.getTerritoryId())); // Territory
             order.set_ValueOfColumn("XX_IsSiteDelivery", Boolean.valueOf(h.isSiteDelivery()));
-            if (h.isSiteDelivery())
-                order.set_ValueOfColumn("XX_SiteDeliveryAddress", h.getSiteAddress());
+            order.set_ValueOfColumn("XX_SiteDeliveryAddress", h.isSiteDelivery() ? h.getSiteAddress() : null);
+
+            // total special discount of the order: the approval workflow looks at this one column
+            BigDecimal special = BigDecimal.ZERO;
+            for (SalesOrderLine l : lines)
+                if (l.getDiscount() != null)
+                    special = special.add(l.getDiscount());
+            order.set_ValueOfColumn("XX_SpecialDiscount", special);
 
             order.saveEx();
+
+            if (orderId > 0) {
+                for (MOrderLine old : order.getLines(true, null))
+                    old.deleteEx(true);
+            }
 
             for (SalesOrderLine l : lines) {
                 MOrderLine ol = new MOrderLine(order);
@@ -78,8 +111,8 @@ public class OrderPersistenceDAO {
                 if (l.getDiscount() != null && l.getDiscount().signum() > 0) {
                     // keep PriceList, lower the price actually charged: iDempiere then shows the
                     // special discount as the line Discount %. net = gross - special discount
-                    java.math.BigDecimal net = l.getGross().subtract(l.getDiscount());
-                    java.math.BigDecimal unit = net.divide(l.getQty(), 6, java.math.RoundingMode.HALF_UP);
+                    BigDecimal net = l.getGross().subtract(l.getDiscount());
+                    BigDecimal unit = net.divide(l.getQty(), 6, java.math.RoundingMode.HALF_UP);
                     ol.setPriceEntered(unit);
                     ol.setPriceActual(unit);
                 }

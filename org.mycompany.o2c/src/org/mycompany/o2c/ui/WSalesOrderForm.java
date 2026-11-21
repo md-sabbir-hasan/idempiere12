@@ -17,11 +17,14 @@ import org.mycompany.o2c.model.Customer;
 import org.mycompany.o2c.model.OfficerScope;
 import org.mycompany.o2c.model.OfficerScope.Territory;
 import org.mycompany.o2c.model.Option;
+import org.mycompany.o2c.model.OrderDetail;
 import org.mycompany.o2c.model.OrderHeader;
 import org.mycompany.o2c.model.OrderRow;
 import org.mycompany.o2c.model.OrderTotals;
 import org.mycompany.o2c.model.Product;
 import org.mycompany.o2c.model.SavedOrder;
+import org.mycompany.o2c.model.SubmitResult;
+import org.mycompany.o2c.model.ZoneManager;
 import org.mycompany.o2c.model.SalesOrderLine;
 import org.mycompany.o2c.model.StockInfo;
 import org.mycompany.o2c.service.CategoryService;
@@ -156,14 +159,16 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
 
     // ---- action buttons
     private Button saveBtn = new Button("Save Draft");
-    private Button completeBtn = new Button("Complete Order");
+    private Button completeBtn = new Button("Submit for Approval");
     private Button printBtn = new Button("Print Order");
     private Button cancelBtn = new Button("Cancel");
     private Label statusBadge = new Label("Draft (not saved)");
 
-    /** Set once the Draft is stored; blocks a second save of the same screen. */
-    private SavedOrder savedOrder = null;
+    /** Id of the order on the screen (0 = a new order, not saved yet) and whether it can still be changed (Draft). */
+    private int editingOrderId = 0;
+    private boolean editable = true;
     private boolean saving = false;
+    private final Label titleLbl = new Label("New Sales Order");
 
     // ---- the officer's own scope: Segment, Sales Types, Territories (from the Officer Assignment)
     private OfficerScope scope = null;
@@ -336,15 +341,13 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         head.setSizable(true);
         String[][] cols = { { "Document No", "140px" }, { "Order Date", "120px" }, { "Customer", null },
                 { "Territory", "170px" }, { "Sales Type", "150px" }, { "Segment", "140px" },
-                { "Grand Total", "130px" }, { "Status", "120px" } };
+                { "Grand Total", "130px" }, { "Status", "260px" } };
         for (String[] c : cols) {
             Listheader h = new Listheader(c[0]);
             if (c[1] != null)
                 h.setWidth(c[1]);
-            else {
-                h.setHflex("1");
-                
-            }
+            else
+                h.setHflex("1");          // hflex only: ZK does not allow hflex and width together
             if ("Grand Total".equals(c[0]))
                 h.setAlign("right");
             head.appendChild(h);
@@ -387,6 +390,9 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         java.text.SimpleDateFormat df = new java.text.SimpleDateFormat("dd-MMM-yyyy");
         for (OrderRow r : rows) {
             Listitem li = new Listitem();
+            li.setAttribute("orderId", Integer.valueOf(r.orderId()));   // click opens the order
+            li.setStyle("cursor:pointer;");
+            li.addEventListener(Events.ON_CLICK, this);
             Listcell no = new Listcell(r.documentNo());
             no.setStyle("font-weight:600;");
             li.appendChild(no);
@@ -399,7 +405,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             gt.setStyle("text-align:right; white-space:nowrap;");
             li.appendChild(gt);
             Listcell st = new Listcell();
-            Label badge = new Label(statusText(r.docStatus()));
+            Label badge = new Label(statusFor(r.docStatus(), r.waitingFor()));
             badge.setStyle(statusStyle(r.docStatus()));
             st.appendChild(badge);
             li.appendChild(st);
@@ -413,7 +419,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             return "";
         switch (st) {
             case "DR": return "Draft";
-            case "IP": return "In Progress";
+            case "IP": return "In Approval";
             case "CO": return "Completed";
             case "CL": return "Closed";
             case "VO": return "Voided";
@@ -421,6 +427,13 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             case "NA": return "Not Approved";
             default: return st;
         }
+    }
+
+    /** Status text; an order in approval also says which step (and person) it waits for. */
+    private static String statusFor(String st, String waitingFor) {
+        if ("IP".equals(st) && waitingFor != null && !waitingFor.isEmpty())
+            return "Waiting: " + waitingFor;
+        return statusText(st);
     }
 
     private static String statusStyle(String st) {
@@ -523,7 +536,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
                    + "background:#ffffff; border:1px solid #e2e8f0; border-radius:12px;");
 
         Div left = new Div();
-        Label title = new Label("New Sales Order");
+        Label title = titleLbl;
         title.setStyle("display:block; font-size:22px; font-weight:700; color:#0f172a;");
         Label sub = new Label("Segment, Sales Type and Territory come from your Officer Assignment");
         sub.setStyle("display:block; color:#64748b; font-size:13px; margin-top:2px;");
@@ -1035,10 +1048,12 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
             Button e = new Button("Edit");
             e.setAttribute("act", "edit");
             e.setAttribute("idx", Integer.valueOf(n - 1));
+            e.setDisabled(!editable);
             e.addEventListener(Events.ON_CLICK, this);
             Button r = new Button("Remove");
             r.setAttribute("act", "remove");
             r.setAttribute("idx", Integer.valueOf(n - 1));
+            r.setDisabled(!editable);
             r.addEventListener(Events.ON_CLICK, this);
             act.appendChild(e);
             act.appendChild(r);
@@ -1066,6 +1081,10 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
                     editLine(idx);
                 else if ("remove".equals(act))
                     removeLine(idx);
+                return;
+            }
+            if (t instanceof Listitem && ((Component) t).getAttribute("orderId") != null) {
+                openOrder(((Integer) ((Component) t).getAttribute("orderId")).intValue());
                 return;
             }
         }
@@ -1098,7 +1117,12 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         } else if (t == siteDelivery) {
             applySiteDelivery(siteDelivery.isChecked());
         } else if (t == cancelBtn) {
+            boolean wasStored = editingOrderId > 0;
             resetForm();
+            if (wasStored) {
+                showList();
+                refreshOrderList();
+            }
         } else if (t == saveBtn) {
             saveDraft();
         } else if (t == createBtn) {
@@ -1111,7 +1135,9 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         } else if (t == resetBtn) {
             resetOrderFilters();
             refreshOrderList();
-        } else if (t == completeBtn || t == printBtn) {
+        } else if (t == completeBtn) {
+            submitOrder();
+        } else if (t == printBtn) {
             Messagebox.show("Later",
                     "Coming next", Messagebox.OK, Messagebox.INFORMATION);
         }
@@ -1146,49 +1172,175 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         return d == null ? null : new java.sql.Timestamp(d.getTime());
     }
 
-    /** Save Draft: one click = one transaction. A second save of the same screen is refused. */
-    private void saveDraft() {
-        if (savedOrder != null) {
-            warn("This order is already saved as " + savedOrder.getDocumentNo()
-                    + ". Press New Order to start another one.");
-            return;
+    /**
+     * Stores the screen as a Draft (new order) or updates the stored Draft. One click = one transaction.
+     * Remembers the order id, so the next save updates the same order.
+     */
+    private SavedOrder persistDraft() {
+        OrderHeader h = readHeader();
+        SavedOrder so = editingOrderId > 0
+                ? salesOrderService.updateDraft(editingOrderId, h, lines)
+                : salesOrderService.saveDraft(h, lines);
+        editingOrderId = so.getOrderId();
+        docNoLbl.setValue(so.getDocumentNo());
+        titleLbl.setValue("Sales Order " + so.getDocumentNo());
+        statusBadge.setValue("Draft: " + so.getDocumentNo());
+        return so;
+    }
+
+    private boolean canWork() {
+        if (!editable) {
+            warn("This order is not a Draft any more, so it cannot be changed.");
+            return false;
         }
-        if (saving)
-            return;
         if (scope == null) {
             warn(scopeError == null ? "You have no current Officer Assignment." : scopeError);
-            return;
+            return false;
         }
+        return !saving;
+    }
+
+    private void saveDraft() {
+        if (!canWork())
+            return;
         saving = true;
         saveBtn.setDisabled(true);
+        completeBtn.setDisabled(true);
         try {
-            SavedOrder so = salesOrderService.saveDraft(readHeader(), lines);
-            savedOrder = so;
-            docNoLbl.setValue(so.getDocumentNo());
-            statusBadge.setValue("Draft saved: " + so.getDocumentNo());
-            cancelBtn.setLabel("New Order");
-            addBtn.setDisabled(true);
+            SavedOrder so = persistDraft();
             Messagebox.show("Draft saved.\nDocument No: " + so.getDocumentNo()
                     + "\nStatus: " + so.getDocStatus()
                     + "\nLines total: " + TAKA + fmt(so.getTotalLines())
                     + "\nGrand total (iDempiere): " + TAKA + fmt(so.getGrandTotal()),
                     "Sales Order", Messagebox.OK, Messagebox.INFORMATION);
         } catch (ValidationException ex) {
-            saveBtn.setDisabled(false);
             warn(ex.getMessage());
         } catch (RuntimeException ex) {
-            saveBtn.setDisabled(false);
             warn("Could not save the order. Nothing was stored.\n" + ex.getMessage());
         } finally {
             saving = false;
+            saveBtn.setDisabled(!editable);
+            completeBtn.setDisabled(!editable);
         }
     }
 
+    /**
+     * Submit for Approval: checks the Zone Manager exists, stores the Draft, then starts the
+     * approval workflow. The approval layers are configured in iDempiere (docs/APPROVAL_SETUP.md).
+     */
+    private void submitOrder() {
+        if (!canWork())
+            return;
+        saving = true;
+        saveBtn.setDisabled(true);
+        completeBtn.setDisabled(true);
+        try {
+            ZoneManager zm = salesOrderService.requireApprover(readHeader());   // fail before anything is stored
+            persistDraft();
+            SubmitResult r = salesOrderService.submit(editingOrderId, headerLookupService.getCurrentUserId());
+            statusBadge.setValue(statusFor(r.docStatus(), r.waitingFor()));
+            setEditable(false);
+            Messagebox.show("Order " + r.documentNo() + " was submitted for approval.\n"
+                    + "Zone Manager: " + zm.userName() + " (" + zm.zoneName() + ")\n"
+                    + "Status: " + statusFor(r.docStatus(), r.waitingFor()),
+                    "Sales Order", Messagebox.OK, Messagebox.INFORMATION);
+        } catch (ValidationException ex) {
+            warn(ex.getMessage());
+        } catch (RuntimeException ex) {
+            warn("Could not submit the order.\n" + ex.getMessage());
+        } finally {
+            saving = false;
+            saveBtn.setDisabled(!editable);
+            completeBtn.setDisabled(!editable);
+        }
+    }
+
+    /** Opens an order of the officer from the list: a Draft can be edited, any other status is read only. */
+    private void openOrder(int orderId) {
+        if (scope == null) {
+            warn(scopeError == null ? "You have no current Officer Assignment." : scopeError);
+            return;
+        }
+        OrderDetail d;
+        try {
+            d = salesOrderService.loadOrder(orderId, scope.officerId());
+        } catch (RuntimeException ex) {
+            warn("Could not open the order.\n" + ex.getMessage());
+            return;
+        }
+        if (d == null) {
+            warn("The order was not found.");
+            refreshOrderList();
+            return;
+        }
+        resetForm();
+        OrderHeader h = d.header();
+        selectById(salesTypeList, h.getDocTypeId());
+        loadTerritories();
+        selectById(territoryList, h.getTerritoryId());
+        loadCustomers();                                   // also clears the lines: they are set below
+        selectById(customerList, h.getBpartnerId());
+        loadCustomerInfo(h.getBpartnerId());
+        selectById(whList, h.getWarehouseId());
+        selectById(orgList, h.getOrgId());
+        selectById(priceListList, h.getPriceListId());
+        selectById(paymentTermList, h.getPaymentTermId());
+        selectById(locationList, h.getLocationId());
+        selectById(departmentList, h.getDepartmentId());
+        orderDate.setValue(h.getDateOrdered());
+        deliveryDate.setValue(h.getDatePromised());
+        notesBox.setValue(h.getDescription());
+        for (Radio rb : new Radio[] { payCash, payCredit, paySample })
+            if (h.getPaymentType().equals(rb.getValue()))
+                payGroup.setSelectedItem(rb);
+        siteDelivery.setChecked(h.isSiteDelivery());
+        applySiteDelivery(h.isSiteDelivery());
+        if (h.isSiteDelivery())
+            siteAddress.setValue(h.getSiteAddress());
+
+        lines.clear();
+        lines.addAll(d.lines());
+        editingOrderId = d.orderId();
+        docNoLbl.setValue(d.documentNo());
+        titleLbl.setValue("Sales Order " + d.documentNo());
+        statusBadge.setValue(d.returnedInfo().isEmpty() ? statusFor(d.docStatus(), d.waitingFor())
+                : "Draft (returned)");
+        setEditable("DR".equals(d.docStatus()));           // also redraws the lines
+        showForm();
+        if (!d.returnedInfo().isEmpty())
+            Messagebox.show(d.returnedInfo() + "\n\nChange the order and submit it for approval again.",
+                    "Order returned", Messagebox.OK, Messagebox.EXCLAMATION);
+    }
+
+    /** Draft: everything can be changed. Any other status: the screen is read only. */
+    private void setEditable(boolean on) {
+        editable = on;
+        saveBtn.setDisabled(!on);
+        completeBtn.setDisabled(!on);
+        addBtn.setDisabled(!on);
+        clearBtn.setDisabled(!on);
+        Component[] inputs = { orgList, whList, salesTypeList, territoryList, customerList, orderDate,
+                deliveryDate, priceListList, locationList, departmentList, paymentTermList, notesBox,
+                siteDelivery, siteAddress, categoryList, productList, qtyBox, spDiscBox,
+                payCash, payCredit, paySample };
+        for (Component c : inputs)
+            setDisabled(c, !on);
+        refreshLines();
+    }
+
+    private static void setDisabled(Component c, boolean disabled) {
+        if (c instanceof Listbox)
+            ((Listbox) c).setDisabled(disabled);
+        else if (c instanceof Checkbox)                    // Radio is a Checkbox
+            ((Checkbox) c).setDisabled(disabled);
+        else if (c instanceof org.zkoss.zul.impl.InputElement)
+            ((org.zkoss.zul.impl.InputElement) c).setDisabled(disabled);
+    }
+
     private boolean lockedAfterSave() {
-        if (savedOrder == null)
+        if (editable)
             return false;
-        warn("The order is saved as " + savedOrder.getDocumentNo()
-                + ". Editing a saved Draft is not available yet. Press New Order.");
+        warn("This order is not a Draft any more, so it cannot be changed.");
         return true;
     }
 
@@ -1202,9 +1354,8 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
     }
 
     private void resetForm() {
-        savedOrder = null;
-        saveBtn.setDisabled(false);
-        addBtn.setDisabled(false);
+        editingOrderId = 0;
+        titleLbl.setValue("New Sales Order");
         cancelBtn.setLabel("Cancel");
         statusBadge.setValue("Draft (not saved)");
         docNoLbl.setValue("Assigned on save");
@@ -1216,6 +1367,7 @@ public class WSalesOrderForm extends ADForm implements EventListener<Event> {
         loadOrgs();
         loadHeaderLookups();
         applyScope();
+        setEditable(true);
     }
 
     private void warn(String msg) {

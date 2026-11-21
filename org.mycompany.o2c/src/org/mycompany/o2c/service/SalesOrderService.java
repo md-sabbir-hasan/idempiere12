@@ -4,14 +4,18 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 
+import org.mycompany.o2c.dao.OrderLoadDAO;
 import org.mycompany.o2c.dao.OrderPersistenceDAO;
 import org.mycompany.o2c.dao.SalesOrderDAO;
+import org.mycompany.o2c.model.OrderDetail;
 import org.mycompany.o2c.model.OrderHeader;
 import org.mycompany.o2c.model.OrderTotals;
 import org.mycompany.o2c.model.Option;
 import org.mycompany.o2c.model.Product;
 import org.mycompany.o2c.model.SalesOrderLine;
 import org.mycompany.o2c.model.SavedOrder;
+import org.mycompany.o2c.model.SubmitResult;
+import org.mycompany.o2c.model.ZoneManager;
 import org.mycompany.o2c.util.ValidationException;
 import org.mycompany.o2c.util.ValidationUtils;
 
@@ -19,6 +23,8 @@ import org.mycompany.o2c.util.ValidationUtils;
 public class SalesOrderService {
     private final SalesOrderDAO dao = new SalesOrderDAO();
     private final OrderPersistenceDAO persistence = new OrderPersistenceDAO();
+    private final OrderLoadDAO loader = new OrderLoadDAO();
+    private final ApprovalService approval = new ApprovalService();
     private final ProductService productService;
     private final TaxService taxService;
     private final DiscountService discountService;
@@ -53,6 +59,41 @@ public class SalesOrderService {
      * @throws ValidationException with a user friendly message when something is missing
      */
     public SavedOrder saveDraft(OrderHeader h, List<SalesOrderLine> lines) {
+        validate(h, lines);
+        return persistence.saveDraft(h, lines);
+    }
+
+    /** Same checks as saveDraft, then replaces header and lines of the officer's own Draft. */
+    public SavedOrder updateDraft(int orderId, OrderHeader h, List<SalesOrderLine> lines) {
+        validate(h, lines);
+        return persistence.updateDraft(orderId, h, lines);
+    }
+
+    /** The Zone Manager who will approve this order; fails when the Zone has none. */
+    public ZoneManager requireApprover(OrderHeader h) {
+        return approval.requireZoneManager(h.getTerritoryId(), h.getDocTypeId(), h.getSegmentId(),
+                h.getDateOrdered());
+    }
+
+    /** Sends a stored Draft into the approval workflow. */
+    public SubmitResult submit(int orderId, int userId) {
+        return approval.submit(orderId, userId);
+    }
+
+    /** A stored order of the officer with all amounts recalculated; null when it is not theirs. */
+    public OrderDetail loadOrder(int orderId, int officerId) {
+        OrderDetail d = loader.find(orderId, officerId);
+        if (d == null)
+            return null;
+        for (SalesOrderLine l : d.lines())
+            calculate(l);
+        d.setWaitingFor(approval.waitingFor(orderId));
+        if ("DR".equals(d.docStatus()))
+            d.setReturnedInfo(approval.returnedInfo(orderId));
+        return d;
+    }
+
+    private void validate(OrderHeader h, List<SalesOrderLine> lines) {
         ValidationUtils.requireId(h.getOrgId(), "Select an Organization.");
         ValidationUtils.requireId(h.getBpartnerId(), "Select a customer.");
         ValidationUtils.requireId(h.getDocTypeId(), "Select the Sales Type.");
@@ -72,7 +113,6 @@ public class SalesOrderService {
             throw new ValidationException("Enter the site delivery address.");
         if (lines == null || lines.isEmpty())
             throw new ValidationException("Add at least one product line.");
-        return persistence.saveDraft(h, lines);
     }
 
     /**

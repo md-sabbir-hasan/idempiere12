@@ -87,8 +87,6 @@ public class WOfficerAssignmentForm extends ADForm {
     private final Listbox grid = new Listbox();
     private final Label countLbl = new Label("");
 
-    private List<IdName> officers = new ArrayList<IdName>();
-
     @Override
     protected void initForm() {
         setStyle("background:#f1f5f9;");
@@ -175,7 +173,9 @@ public class WOfficerAssignmentForm extends ADForm {
         buttons.appendChild(reset);
         card.appendChild(buttons);
 
-        fLevel.addEventListener(Events.ON_SELECT, e -> reloadLocations(fLevel, fLocation, "All"));
+        fSegment.addEventListener(Events.ON_SELECT, e -> onFilterSegmentChange());
+        fLevel.addEventListener(Events.ON_SELECT,
+                e -> reloadLocations(fLevel, fLocation, idOf(fSegment), "All"));
         return card;
     }
 
@@ -200,7 +200,7 @@ public class WOfficerAssignmentForm extends ADForm {
         head.appendChild(header("Start Date", "8%"));
         head.appendChild(header("End Date", "8%"));
         head.appendChild(header("Status", "7%"));
-        head.appendChild(header("", "7%"));
+        head.appendChild(header("", "13%"));
         grid.appendChild(head);
 
         card.appendChild(grid);
@@ -210,17 +210,21 @@ public class WOfficerAssignmentForm extends ADForm {
     private void loadFilterData() {
         fill(fType, service.salesTypes(), "All");
         fill(fSegment, service.segments(), "All");
-        fill(fLevel, service.levels(), "All");
-        reloadLocations(fLevel, fLocation, "All");
-        officers = service.officers();
-        fillCombo(fOfficer, officers);
+        onFilterSegmentChange();
+    }
+
+    /** Level, Location and Officer of the filter follow the chosen Segment. */
+    private void onFilterSegmentChange() {
+        int seg = idOf(fSegment);
+        fill(fLevel, service.levels(seg), "All");
+        reloadLocations(fLevel, fLocation, seg, "All");
+        fillCombo(fOfficer, service.historyOfficers(seg));
     }
 
     private void resetFilters() {
         fType.setSelectedIndex(0);
         fSegment.setSelectedIndex(0);
-        fLevel.setSelectedIndex(0);
-        reloadLocations(fLevel, fLocation, "All");
+        onFilterSegmentChange();
         fOfficer.setValue("");
         fStatus.setSelectedItem(rActive);
         refresh();
@@ -265,6 +269,11 @@ public class WOfficerAssignmentForm extends ADForm {
         it.appendChild(status);
 
         Listcell action = new Listcell();
+        Button audit = new Button("Audit");
+        audit.setStyle(SMALL_BTN.replace("#b91c1c", "#1d4ed8").replace("#fca5a5", "#93c5fd")
+                + " margin-right:4px;");
+        audit.addEventListener(Events.ON_CLICK, e -> new OfficerAuditDialog(a).open(this));
+        action.appendChild(audit);
         if (a.isOpen()) {
             Button end = new Button("End");
             end.setStyle(SMALL_BTN);
@@ -429,17 +438,25 @@ public class WOfficerAssignmentForm extends ADForm {
             try {
                 fill(type, service.salesTypes(), "Select...");
                 fill(segment, service.segments(), "Select...");
-                fill(level, service.levels(), "Select...");
-                reloadLocations(level, location, "All in this level");
-                fillCombo(officer, officers);
+                fill(level, service.levels(0), "Select...");
+                reloadLocations(level, location, 0, "All in this level");
+                reloadOfficers();
             } catch (RuntimeException ex) {
                 msg.setValue("Could not load data: " + ex.getMessage());
             }
 
-            type.addEventListener(Events.ON_SELECT, e -> renderRegions());
-            segment.addEventListener(Events.ON_SELECT, e -> renderRegions());
+            type.addEventListener(Events.ON_SELECT, e -> {
+                reloadOfficers();
+                renderRegions();
+            });
+            segment.addEventListener(Events.ON_SELECT, e -> {
+                fill(level, service.levels(idOf(segment)), "Select...");
+                reloadLocations(level, location, idOf(segment), "All in this level");
+                reloadOfficers();
+                renderRegions();
+            });
             level.addEventListener(Events.ON_SELECT, e -> {
-                reloadLocations(level, location, "All in this level");
+                reloadLocations(level, location, idOf(segment), "All in this level");
                 renderRegions();
             });
             location.addEventListener(Events.ON_SELECT, e -> renderRegions());
@@ -448,6 +465,13 @@ public class WOfficerAssignmentForm extends ADForm {
 
             renderRegions();
             win.doModal();
+        }
+
+        /** Only officers with Segment Access (and Document Access of the Sales Type) can be chosen. */
+        private void reloadOfficers() {
+            int s = idOf(segment);
+            fillCombo(officer, s == 0 ? new ArrayList<IdName>() : service.officers(s, idOf(type)));
+            officer.setPlaceholder(s == 0 ? "Select the Segment first" : "Type to search");
         }
 
         private void renderRegions() {
@@ -586,9 +610,9 @@ public class WOfficerAssignmentForm extends ADForm {
     }
 
     /** Location choices depend on the chosen level (the regions one level above). */
-    private void reloadLocations(Listbox levelBox, Listbox locationBox, String firstLabel) {
+    private void reloadLocations(Listbox levelBox, Listbox locationBox, int segmentId, String firstLabel) {
         int lvl = idOf(levelBox);
-        List<IdName> locs = service.locations(lvl);
+        List<IdName> locs = service.locations(lvl, segmentId);
         fill(locationBox, locs, locs.isEmpty() ? "-" : firstLabel);
         locationBox.setDisabled(locs.isEmpty());
     }

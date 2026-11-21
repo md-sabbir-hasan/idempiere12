@@ -4,6 +4,7 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.compiere.model.MOrder;
 import org.compiere.util.DB;
 import org.compiere.util.Env;
 import org.compiere.util.Trx;
@@ -37,14 +38,68 @@ public class OfficerAssignmentDAO {
             rs -> new IdName(rs.getInt(1), rs.getString(2)), DBUtils.clientId());
     }
 
-    /** Users that can be an officer: users of a Sales Representative business partner. */
-    public List<IdName> findOfficers() {
-        return DBUtils.queryList(
+    /** SQL part: the user has the Segment in Segment Access (AD_User_SegmentAccess). */
+    private static final String HAS_SEGMENT =
+        "EXISTS (SELECT 1 FROM ad_user_segmentaccess sa WHERE sa.ad_user_id = u.ad_user_id "
+      + "AND sa.c_activity_id = ? AND sa.isactive = 'Y')";
+
+    /** SQL part: the user has the Sales Type in Document Access (AD_User_DocTypeAccess). */
+    private static final String HAS_DOCTYPE =
+        "EXISTS (SELECT 1 FROM ad_user_doctypeaccess da WHERE da.ad_user_id = u.ad_user_id "
+      + "AND da.c_doctype_id = ? AND da.isactive = 'Y')";
+
+    /**
+     * Users that can be given an assignment: active users of a Sales Representative business partner
+     * who have the Segment (and, when given, the Sales Type) in their access. 0 = no condition.
+     */
+    public List<IdName> findOfficers(int activityId, int docTypeId) {
+        StringBuilder sql = new StringBuilder(
             "SELECT u.ad_user_id, " + OFFICER_LABEL + " AS label "
           + "FROM ad_user u JOIN c_bpartner bp ON bp.c_bpartner_id = u.c_bpartner_id "
-          + "WHERE u.ad_client_id = ? AND u.isactive = 'Y' AND bp.isactive = 'Y' AND bp.issalesrep = 'Y' "
-          + "ORDER BY 2",
-            rs -> new IdName(rs.getInt(1), rs.getString(2)), DBUtils.clientId());
+          + "WHERE u.ad_client_id = ? AND u.isactive = 'Y' AND bp.isactive = 'Y' AND bp.issalesrep = 'Y'");
+        List<Object> params = new ArrayList<Object>();
+        params.add(Integer.valueOf(DBUtils.clientId()));
+        if (activityId > 0) {
+            sql.append(" AND ").append(HAS_SEGMENT);
+            params.add(Integer.valueOf(activityId));
+        }
+        if (docTypeId > 0) {
+            sql.append(" AND ").append(HAS_DOCTYPE);
+            params.add(Integer.valueOf(docTypeId));
+        }
+        sql.append(" ORDER BY 2");
+        return DBUtils.queryList(sql.toString(), rs -> new IdName(rs.getInt(1), rs.getString(2)),
+                params.toArray());
+    }
+
+    /** Is the user active, a Sales Rep, and allowed for this Segment and Sales Type? (server side check) */
+    public boolean isOfficerAllowed(int officerId, int activityId, int docTypeId) {
+        for (IdName o : findOfficers(activityId, docTypeId))
+            if (o.id() == officerId)
+                return true;
+        return false;
+    }
+
+    /**
+     * Officers for the filter of the main list: everybody who has (or had) an assignment, also users that
+     * are inactive now, so the history can still be searched. activityId 0 = all Segments.
+     */
+    public List<IdName> findOfficersWithHistory(int activityId) {
+        StringBuilder sql = new StringBuilder(
+            "SELECT DISTINCT u.ad_user_id, "
+          + OFFICER_LABEL + " || CASE WHEN u.isactive = 'N' THEN ' (inactive)' ELSE '' END AS label "
+          + "FROM xx_salesregionofficer o JOIN ad_user u ON u.ad_user_id = o.ad_user_id "
+          + "LEFT JOIN c_bpartner bp ON bp.c_bpartner_id = u.c_bpartner_id "
+          + "WHERE o.ad_client_id = ?");
+        List<Object> params = new ArrayList<Object>();
+        params.add(Integer.valueOf(DBUtils.clientId()));
+        if (activityId > 0) {
+            sql.append(" AND o.c_activity_id = ?");
+            params.add(Integer.valueOf(activityId));
+        }
+        sql.append(" ORDER BY 2");
+        return DBUtils.queryList(sql.toString(), rs -> new IdName(rs.getInt(1), rs.getString(2)),
+                params.toArray());
     }
 
     /** All active regions with their parent from the Sales Region tree (tree type SR). */
@@ -52,7 +107,7 @@ public class OfficerAssignmentDAO {
         return DBUtils.queryList(
             "SELECT r.c_salesregion_id, r.name, COALESCE(n.parent_id, 0), "
           + "COALESCE(r.xx_levelno, 0), COALESCE(r.xx_levelname, ''), "
-          + "COALESCE(r.m_warehouse_id, 0), COALESCE(w.name, '') "
+          + "COALESCE(r.m_warehouse_id, 0), COALESCE(w.name, ''), COALESCE(r.c_activity_id, 0) "
           + "FROM c_salesregion r "
           + "LEFT JOIN m_warehouse w ON w.m_warehouse_id = r.m_warehouse_id "
           + "LEFT JOIN ad_treenode n ON n.node_id = r.c_salesregion_id AND n.ad_tree_id = "
@@ -60,7 +115,7 @@ public class OfficerAssignmentDAO {
           + "   AND t.treetype = 'SR' AND t.isactive = 'Y') "
           + "WHERE r.ad_client_id = ? AND r.isactive = 'Y' ORDER BY r.name",
             rs -> new RegionNode(rs.getInt(1), rs.getString(2), rs.getInt(3), rs.getInt(4), rs.getString(5),
-                    rs.getInt(6), rs.getString(7)),
+                    rs.getInt(6), rs.getString(7), rs.getInt(8)),
             DBUtils.clientId());
     }
 
@@ -129,9 +184,10 @@ public class OfficerAssignmentDAO {
     /**
      * One transaction: first ends the old assignments (endIds, with endDate), then inserts one
      * assignment per region. Everything is saved, or nothing.
+     * reassigns: orders waiting at the "ZM Approval" step of a replaced officer move to the new officer.
      */
     public void assign(int officerId, int docTypeId, int activityId, Timestamp startDate,
-            List<Integer> regionIds, List<Integer> endIds, Timestamp endDate) {
+            List<Integer> regionIds, List<Integer> endIds, Timestamp endDate, List<Reassign> reassigns) {
         int clientId = DBUtils.clientId();
         int orgId = Env.getAD_Org_ID(Env.getCtx());
         int userId = Env.getAD_User_ID(Env.getCtx());
@@ -144,6 +200,8 @@ public class OfficerAssignmentDAO {
                     + "updatedby = ? WHERE xx_salesregionofficer_id = ? AND enddate IS NULL",
                     new Object[] { endDate, Integer.valueOf(userId), oldId }, trxName);
             }
+            for (Reassign r : reassigns)
+                reassignPendingApprovals(r, officerId, userId, trxName);
             String insert = "INSERT INTO xx_salesregionofficer (xx_salesregionofficer_id, ad_client_id, "
                 + "ad_org_id, isactive, created, createdby, updated, updatedby, c_salesregion_id, "
                 + "ad_user_id, c_doctype_id, c_activity_id, startdate"
@@ -168,6 +226,38 @@ public class OfficerAssignmentDAO {
         } finally {
             trx.close();
         }
+    }
+
+    /** A replaced officer: the orders in these regions (and Sales Type / Segment) that wait for him. */
+    public record Reassign(int oldOfficerId, int docTypeId, int activityId, List<Integer> regionIds) {
+    }
+
+    /**
+     * Approval activities (step "ZM Approval") that still wait for the replaced officer are given to the new
+     * officer, so no order stays with somebody who is no longer the Zone Manager.
+     */
+    private void reassignPendingApprovals(Reassign r, int newOfficerId, int byUser, String trxName) {
+        if (r.regionIds().isEmpty() || r.oldOfficerId() == newOfficerId)
+            return;
+        StringBuilder in = new StringBuilder();
+        List<Object> params = new ArrayList<Object>();
+        params.add(Integer.valueOf(newOfficerId));
+        params.add(Integer.valueOf(byUser));
+        params.add(Integer.valueOf(r.oldOfficerId()));
+        params.add(Integer.valueOf(MOrder.Table_ID));
+        params.add(ApprovalDAO.ZM_NODE);
+        params.add(Integer.valueOf(r.docTypeId()));
+        params.add(Integer.valueOf(r.activityId()));
+        for (Integer id : r.regionIds()) {
+            in.append(in.length() == 0 ? "?" : ",?");
+            params.add(id);
+        }
+        DB.executeUpdateEx("UPDATE ad_wf_activity SET ad_user_id = ?, updated = now(), updatedby = ? "
+            + "WHERE ad_user_id = ? AND processed = 'N' AND ad_table_id = ? "
+            + "AND ad_wf_node_id IN (SELECT ad_wf_node_id FROM ad_wf_node WHERE name = ?) "
+            + "AND record_id IN (SELECT c_order_id FROM c_order WHERE c_doctypetarget_id = ? "
+            + "AND c_activity_id = ? AND c_salesregion_id IN (" + in + "))",
+            params.toArray(), trxName);
     }
 
     /** Sets the End Date of a current assignment. Returns false when it was already ended. */

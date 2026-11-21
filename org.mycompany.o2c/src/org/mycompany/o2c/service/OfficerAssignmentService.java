@@ -42,14 +42,22 @@ public class OfficerAssignmentService {
         return dao.findSegments();
     }
 
-    public List<IdName> officers() {
-        return dao.findOfficers();
+    /** Officers that may get an assignment for the Segment and Sales Type (0 = no condition). */
+    public List<IdName> officers(int activityId, int docTypeId) {
+        return dao.findOfficers(activityId, docTypeId);
     }
 
-    /** Levels found in the Sales Region data, id = level number, text like "2-Division". */
-    public List<IdName> levels() {
+    /** Officers of the filter of the main list: all that have or had an assignment (also inactive users). */
+    public List<IdName> historyOfficers(int activityId) {
+        return dao.findOfficersWithHistory(activityId);
+    }
+
+    /** Levels found in the Sales Region data of the Segment (0 = all), id = level number, text like "2-Division". */
+    public List<IdName> levels(int activityId) {
         TreeMap<Integer, String> found = new TreeMap<Integer, String>();
         for (RegionNode r : regionMap().values()) {
+            if (activityId > 0 && r.activityId() != activityId)
+                continue;
             if (r.levelNo() > 0 && !found.containsKey(Integer.valueOf(r.levelNo())))
                 found.put(Integer.valueOf(r.levelNo()), r.levelName());
         }
@@ -59,12 +67,14 @@ public class OfficerAssignmentService {
         return out;
     }
 
-    /** Locations to pick for a level = the regions one level above it. Empty for level 1. */
-    public List<IdName> locations(int levelNo) {
+    /** Locations to pick for a level = the regions one level above it, of the Segment (0 = all). Empty for level 1. */
+    public List<IdName> locations(int levelNo, int activityId) {
         List<IdName> out = new ArrayList<IdName>();
         if (levelNo <= 1)
             return out;
         for (RegionNode r : regionMap().values()) {
+            if (activityId > 0 && r.activityId() != activityId)
+                continue;
             if (r.levelNo() == levelNo - 1) {
                 String above = r.parentId() > 0 ? path(r.parentId()) : "";
                 out.add(new IdName(r.id(), above.isEmpty() ? r.name() : r.name() + " (" + above + ")"));
@@ -123,6 +133,8 @@ public class OfficerAssignmentService {
         for (RegionNode r : regionMap().values()) {
             if (r.levelNo() != levelNo)
                 continue;
+            if (activityId > 0 && r.activityId() != activityId)
+                continue;                                      // only the regions of this Segment
             if (locationId > 0 && r.parentId() != locationId)
                 continue;
             out.add(new RegionRow(r, path(r.id()), current.get(Integer.valueOf(r.id()))));
@@ -145,11 +157,25 @@ public class OfficerAssignmentService {
         if (start == null)
             throw new ValidationException("Enter the Start Date.");
 
+        // the Segment of every region must be the chosen Segment (do not trust the screen)
+        for (Integer rid : regionIds) {
+            RegionNode r = regionMap().get(rid);
+            if (r == null)
+                throw new ValidationException("A selected region was not found. Refresh and try again.");
+            if (r.activityId() != activityId)
+                throw new ValidationException(r.name() + " does not belong to the selected Segment.");
+        }
+        // the officer must be active and have this Segment and Sales Type in Segment / Document Access
+        if (!dao.isOfficerAllowed(officerId, activityId, docTypeId))
+            throw new ValidationException("This officer is not active, or has no Segment Access / Document Access "
+                + "for the selected Segment and Sales Type (User window).");
+
         Map<Integer, List<OfficerAssignment>> history = new HashMap<Integer, List<OfficerAssignment>>();
         for (OfficerAssignment a : dao.findAssignments(docTypeId, activityId, 0, Status.ALL))
             history.computeIfAbsent(Integer.valueOf(a.regionId()), k -> new ArrayList<OfficerAssignment>()).add(a);
 
         List<Integer> toEnd = new ArrayList<Integer>();
+        List<OfficerAssignmentDAO.Reassign> reassigns = new ArrayList<OfficerAssignmentDAO.Reassign>();
         for (Integer rid : regionIds) {
             for (OfficerAssignment a : history.getOrDefault(rid, Collections.<OfficerAssignment>emptyList())) {
                 LocalDate aStart = a.startDate().toLocalDateTime().toLocalDate();
@@ -162,6 +188,8 @@ public class OfficerAssignmentService {
                         throw new ValidationException(a.regionName() + ": Start Date must be after "
                             + aStart.format(FMT) + " (Start Date of " + a.officerName() + ").");
                     toEnd.add(Integer.valueOf(a.id()));
+                    reassigns.add(new OfficerAssignmentDAO.Reassign(a.officerId(), docTypeId, activityId,
+                        regionAndBelow(rid.intValue())));
                 } else {
                     LocalDate aEnd = a.endDate().toLocalDateTime().toLocalDate();
                     if (!aEnd.isBefore(start))
@@ -171,7 +199,7 @@ public class OfficerAssignmentService {
             }
         }
         dao.assign(officerId, docTypeId, activityId, Timestamp.valueOf(start.atStartOfDay()), regionIds,
-                toEnd, Timestamp.valueOf(start.minusDays(1).atStartOfDay()));
+                toEnd, Timestamp.valueOf(start.minusDays(1).atStartOfDay()), reassigns);
         return regionIds.size();
     }
 
@@ -192,6 +220,16 @@ public class OfficerAssignmentService {
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /** The region and every region below it in the tree. */
+    private List<Integer> regionAndBelow(int regionId) {
+        List<Integer> out = new ArrayList<Integer>();
+        for (RegionNode r : regionMap().values()) {
+            if (r.id() == regionId || isUnder(r.id(), regionId))
+                out.add(Integer.valueOf(r.id()));
+        }
+        return out;
+    }
 
     private boolean isUnder(int regionId, int ancestorId) {
         int id = regionId;
